@@ -404,8 +404,9 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
     float scale = config.resolutionScale;
     scaledWidth_ = static_cast<uint32_t>(renderWidth * scale);
     scaledHeight_ = static_cast<uint32_t>(renderHeight * scale);
-    scaledWidth_ = (scaledWidth_ + 15) & ~15u;
-    scaledHeight_ = (scaledHeight_ + 15) & ~15u;
+    // Align DOWN to 16 bytes to avoid mismatch with input textures (which prevents unnecessary downscaling)
+    scaledWidth_ = scaledWidth_ & ~15u;
+    scaledHeight_ = scaledHeight_ & ~15u;
     encodedWidth_ = scaledWidth_ * 2;
     encodedHeight_ = scaledHeight_;
     foveatedTargetEyeWidth_ = scaledWidth_;
@@ -927,14 +928,14 @@ void StreamingServer::TcpVideoThread()
             }
             tcpVideoClientSocket_ = clientSocket;
         }
+        // Allow any TCP connection for simulator mode - local clients
+        // like OXRSys StereoView can still receive frames when no headset connects.
         {
             std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
-            if (clientUsesUsbAdb_.load())
-            {
-                packetDispatchState_->videoSocket = clientSocket;
-                packetDispatchState_->videoUsesTcp = true;
-                packetDispatchState_->acceptingPackets = true;
-            }
+            packetDispatchState_->clientIp.clear();
+            packetDispatchState_->videoSocket = clientSocket;
+            packetDispatchState_->videoUsesTcp = true;
+            packetDispatchState_->acceptingPackets = true;
         }
 
         spdlog::info("StreamingServer: USB ADB video client connected");

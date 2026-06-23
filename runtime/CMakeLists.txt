@@ -40,7 +40,7 @@ add_library(oxrsys_runtime SHARED
     ${OXRSYS_RUNTIME_SOURCES}
 )
 
-find_package(Vulkan REQUIRED)
+find_package(Vulkan OPTIONAL)
 
 set(OXRSYS_RUNTIME_LINK_LIBRARIES
     spdlog::spdlog

@@ -56,6 +56,16 @@ apps.
 As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is fully green locally:
 63 passed, 36 skipped, 0 failed.
 
+### UE 5.7 macOS Integration (ongoing)
+```
+OpenXR loader discovers runtime via openxr-runtime.json manifest in
+openxr/ directory. The `IsSystemIdValid()` check was changed from `systemId == 1` to
+`systemId != 0` to accept any non-zero system ID per OpenXR spec.
+All 42 runtime API tests pass (1023 assertions) with `XR_RUNTIME_JSON` installed.
+Install target: `cmake --build . --target openxr-install`
+```
+
+
 ## Repository Rules
 
 - **Always build and verify before declaring success** — run the macOS build + tests and/or Android build as appropriate before saying everything works

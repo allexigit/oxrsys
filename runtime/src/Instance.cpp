@@ -40,7 +40,7 @@ XrResult Instance::GetSystem(const XrSystemGetInfo* getInfo, XrSystemId* systemI
 
 XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* properties)
 {
-    if (systemId != 1 || !systemRequested_)
+    if (!IsSystemIdValid(systemId))
     {
         return XR_ERROR_SYSTEM_INVALID;
     }
@@ -95,7 +95,8 @@ XrResult Instance::EnumerateViewConfigurations(XrSystemId systemId,
                                                 uint32_t* viewConfigurationTypeCountOutput,
                                                 XrViewConfigurationType* viewConfigurationTypes)
 {
-    if (systemId != 1)
+// Accept any non-zero systemId for UE compatibility
+    if (!IsSystemIdValid(systemId) && systemId != 0)
     {
         return XR_ERROR_SYSTEM_INVALID;
     }
@@ -123,7 +124,8 @@ XrResult Instance::GetViewConfigurationProperties(XrSystemId systemId,
                                                     XrViewConfigurationType viewConfigurationType,
                                                     XrViewConfigurationProperties* configurationProperties)
 {
-    if (systemId != 1)
+// Accept any non-zero systemId for UE compatibility
+    if (!IsSystemIdValid(systemId) && systemId != 0)
     {
         return XR_ERROR_SYSTEM_INVALID;
     }
@@ -148,7 +150,8 @@ XrResult Instance::EnumerateViewConfigurationViews(XrSystemId systemId,
                                                      uint32_t* viewCountOutput,
                                                      XrViewConfigurationView* views)
 {
-    if (systemId != 1)
+// Accept any non-zero systemId for UE compatibility
+    if (!IsSystemIdValid(systemId) && systemId != 0)
     {
         return XR_ERROR_SYSTEM_INVALID;
     }
@@ -191,7 +194,8 @@ XrResult Instance::EnumerateEnvironmentBlendModes(XrSystemId systemId,
                                                     uint32_t* environmentBlendModeCountOutput,
                                                     XrEnvironmentBlendMode* environmentBlendModes)
 {
-    if (systemId != 1)
+// Accept any non-zero systemId for UE compatibility
+    if (!IsSystemIdValid(systemId) && systemId != 0)
     {
         return XR_ERROR_SYSTEM_INVALID;
     }
@@ -271,7 +275,7 @@ bool Instance::SupportsLocalFloor() const
 
 bool Instance::IsSystemIdValid(XrSystemId systemId) const
 {
-    return systemRequested_ && systemId == 1;
+    return systemRequested_ && (systemId != 0);
 }
 
 void Instance::MarkMetalGraphicsRequirementsQueried()

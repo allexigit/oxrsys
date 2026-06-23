@@ -145,6 +145,7 @@ int main()
 
         // Main frame loop
         std::cout << "\nStarting frame submission loop (60 frames)..." << std::endl;
+        std::cout << "Streaming server running - simulator can now connect!" << std::endl;
         const int frameCount = 60;
 
         for (int frameIdx = 0; frameIdx < frameCount; ++frameIdx)
@@ -226,6 +227,8 @@ int main()
         }
 
         std::cout << "\nFrame submission complete!" << std::endl;
+        std::cout << "Keeping runtime alive for 5 seconds (connect simulator now)..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(5));
 
         // Cleanup
         std::cout << "Cleaning up..." << std::endl;

@@ -76,7 +76,7 @@ struct DebugUtilsMessengerState
     void* userData = nullptr;
 };
 
-// Metal device — retained from xrGetMetalGraphicsRequirementsKHR
+// Metal device â retained from xrGetMetalGraphicsRequirementsKHR
 static void* gMetalDevice = nullptr;
 
 // Suggested bindings storage: interactionProfile path -> list of (action handle, binding path string)
@@ -105,7 +105,7 @@ static GraphicsApi gGraphicsApi = GraphicsApi::Vulkan;
 #endif
 
 #ifdef XR_USE_GRAPHICS_API_VULKAN
-// Global Vulkan dispatch — definition (declared extern in VulkanDispatch.h)
+// Global Vulkan dispatch â definition (declared extern in VulkanDispatch.h)
 VulkanDispatch gVulkanDispatch;
 
 static bool EnsureVulkanInstanceDispatch(VkInstance vkInstance, const char* context)
@@ -2462,7 +2462,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateActionSpace(
         return XR_ERROR_VALIDATION_FAILURE;
     }
 
-    // Determine the subaction path — either explicitly provided or infer from bindings
+    // Determine the subaction path â either explicitly provided or infer from bindings
     XrPath subactionPath = createInfo->subactionPath;
 
     // If no subaction path, try to infer from the action's bindings
@@ -3324,10 +3324,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetVulkanGraphicsRequirementsKHR(
     {
         return XR_ERROR_HANDLE_INVALID;
     }
-    if (systemId != 1)
-    {
-        return XR_ERROR_SYSTEM_INVALID;
-    }
+// Accept any systemId - UE may call xrGetMetalGraphicsRequirementsKHR before xrGetSystem
+
     if (graphicsRequirements == nullptr)
     {
         return XR_ERROR_VALIDATION_FAILURE;
@@ -3543,10 +3541,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetMetalGraphicsRequirementsKHR(
     {
         return XR_ERROR_HANDLE_INVALID;
     }
-    if (systemId != 1)
-    {
-        return XR_ERROR_SYSTEM_INVALID;
-    }
+// Accept any systemId - UE may call xrGetMetalGraphicsRequirementsKHR before xrGetSystem
+
     if (graphicsRequirements == nullptr)
     {
         return XR_ERROR_VALIDATION_FAILURE;
@@ -3559,7 +3555,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetMetalGraphicsRequirementsKHR(
         // For now, use MTLCreateSystemDefaultDevice equivalent
         // This is handled in the .mm file but we need a C++ way
         // We'll store the device pointer and the app will use it
-        // Actually, we need to call Metal API — let's use dlsym
+        // Actually, we need to call Metal API â let's use dlsym
         typedef void* (*MTLCreateSystemDefaultDeviceFn)(void);
         void* metalFramework = dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_LAZY);
         if (metalFramework)
@@ -3588,7 +3584,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetMetalGraphicsRequirementsKHR(
 #endif
 
 // ============================================================================
-// xrGetInstanceProcAddr — the main dispatch function
+// xrGetInstanceProcAddr â the main dispatch function
 // ============================================================================
 
 static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
@@ -3750,7 +3746,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
 #undef DISPATCH
 
 // ============================================================================
-// Loader negotiation — the only exported symbol
+// Loader negotiation â the only exported symbol
 // ============================================================================
 
 extern "C"

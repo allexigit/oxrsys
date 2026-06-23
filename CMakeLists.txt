@@ -89,7 +89,7 @@ FetchContent_MakeAvailable(OpenXR)
 # --- Our runtime ---
 add_subdirectory(runtime)
 
-find_package(Vulkan REQUIRED)
+find_package(Vulkan)
 
 add_custom_target(oxrsys_runtime_sync_compile_commands ALL
     COMMAND ${CMAKE_COMMAND}
@@ -255,6 +255,10 @@ if(APPLE)
         TIMEOUT 120
     )
     list(APPEND OXRSYS_RUNTIME_TEST_TARGETS oxrsys_runtime_api_tests)
+
+    # Minimal stereo rendering test app
+    add_subdirectory(tests/test-app)
+    add_dependencies(oxrsys_test_app oxrsys_runtime)
 endif()
 
 add_dependencies(oxrsys_runtime_sync_compile_commands

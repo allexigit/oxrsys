@@ -562,9 +562,15 @@ TEST_CASE("Runtime validates the session system id before graphics checks", "[ru
     CHECK(xrCreateSession(instance, &sessionCreateInfo, &session) == XR_ERROR_SYSTEM_INVALID);
     CHECK(session == XR_NULL_HANDLE);
 
-    sessionCreateInfo.systemId = systemId + 1;
+    sessionCreateInfo.systemId = XR_NULL_SYSTEM_ID;
     CHECK(xrCreateSession(instance, &sessionCreateInfo, &session) == XR_ERROR_SYSTEM_INVALID);
     CHECK(session == XR_NULL_HANDLE);
+
+     // Non-zero system IDs are now accepted per OpenXR spec (loader may pass any value)
+    XrSystemId testId = 42;
+    sessionCreateInfo.systemId = testId;
+    XR_CHECK(xrCreateSession(instance, &sessionCreateInfo, &session));
+    CHECK(session != XR_NULL_HANDLE);
 
     XR_CHECK(xrDestroyInstance(instance));
 }
