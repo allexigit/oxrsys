@@ -123,15 +123,20 @@ idle. The fields are:
 - `sample_unix_ms`
 - `refresh_rate_hz`, `current_bitrate_mbps`, `max_bitrate_mbps`
 - `render_width`, `render_height`, `encoded_width`, `encoded_height`
+- `encoder_preset`, `foveated_encoding_preset`, `client_foveation_preset`,
+  `client_upscaling`, `client_reprojection_mode`, `abr_mode`, `abr_state`,
+  `abr_profile`, `headset_audio`
 - `latency_ms.server_pipeline`, `latency_ms.client_pipeline`,
   `latency_ms.client_receive_to_submit`, `latency_ms.client_decode`,
-  `latency_ms.client_compositor`, `latency_ms.prediction_horizon`
+  `latency_ms.client_compositor`, `latency_ms.prediction_horizon`,
+  `latency_ms.displayed_frame_age`
 - `encode_ms.queue_avg`, `encode_ms.queue_p95`, `encode_ms.gpu_avg`, `encode_ms.gpu_p95`,
   `encode_ms.submit_avg`, `encode_ms.submit_p95`, `encode_ms.callback_avg`,
   `encode_ms.callback_p95`, `encode_ms.total_avg`, `encode_ms.total_p95`
 - `counters.encoded_frames_total`, `counters.encoder_dropped_frames_total`,
   `counters.replaced_frames_delta`, `counters.keyframe_requests_delta`,
-  `counters.pending_depth_max`
+  `counters.pending_depth_max`, `counters.reprojected_frames_delta`,
+  `counters.stale_frame_reuses_delta`, `counters.render_pose_fallbacks_delta`
 
 The same header area includes a WiFi/USB selector. Selecting WiFi writes `streaming.transport = "wifi"`
 and shows whether the Mac WiFi interface is powered on. Selecting USB writes
@@ -163,13 +168,52 @@ The structured editor covers the current runtime keys:
 
 - `general.runtime_enabled`
 - `streaming.bitrate_mbps`
-- `streaming.fov_degrees`
 - `streaming.resolution_scale`
+- `streaming.refresh_rate_hz`
 - `streaming.keyframe_interval_sec`
 - `streaming.encoder_preset`
 - `streaming.transport`
+- `streaming.foveated_encoding_preset`
+- `streaming.client_foveation_preset`
+- `streaming.client_upscaling`
+- `streaming.client_reprojection`
+- `streaming.abr_mode`
+- `streaming.headset_audio`
 - `logging.file_logging`
 - `logging.quest_logcat`
+
+The bitrate control accepts the shared runtime range, `1` to `200` Mbps. Apple
+and Qt simulator clients do not add their own bitrate ceiling, so the runtime
+status `max_bitrate_mbps` should reflect the configured value when those
+clients connect.
+
+The refresh control writes one of `60`, `72`, `80`, `90`, or `120` Hz. The
+runtime announces that value, and Quest clients request it through
+`XR_FB_display_refresh_rate` before reporting the active display rate back.
+
+Simulator FOV is configured in the simulator window/settings sheet. Home does
+not write `streaming.fov_degrees`; the runtime only keeps that key as a legacy
+fallback for clients that do not send `TrackingPacket.eyeFov`.
+
+`foveated_encoding_preset` controls the server-side ALVR-style AADT video
+compression path on supported server/client combinations.
+
+The Headset Client section owns client-side headset options. `client_foveation_preset = "auto"`
+does not send an `XR_FB_foveation` override to the headset client; `off`, `light`, `medium`,
+and `high` explicitly override the Quest/PICO viewer swapchains. This is separate from
+foveated encoding and does not change the desktop OpenXR application's rendering work.
+`client_upscaling` enables the Quest shader upscaling path. `headset_audio` is reserved in
+config and protocol, but the runtime does not advertise audio as active until a real
+capture/playback path is attached.
+
+`client_reprojection` controls short missing-frame smoothing on the Quest client. The default
+`pose` reuses a recent decoded texture with the matched server render pose; `pose_warp` additionally
+allows a small GLES image-space orientation correction when safety checks pass. `off` disables the
+stale-frame reprojection path.
+
+`abr_mode` controls server-side adaptive bitrate. `bitrate` adjusts bitrate using latency, displayed
+frame age, drops, keyframe requests, and reprojection pressure. `full` currently exposes profile
+selection in runtime status for session-safe resolution/foveation/upscaling transitions.
 
 Changes in the Streaming tab are saved automatically after a short debounce. `Reload From Disk`
 discards unsaved UI edits and reparses the TOML. `Default` restores the structured streaming,
@@ -181,10 +225,13 @@ immediately. `Reveal Config` opens the TOML location, and `Reveal Runtime Logs` 
 The runtime reloads config file changes opportunistically:
 
 - `runtime_enabled` is applied to subsequent `xrCreateInstance` calls
-- `fov_degrees` is picked up on subsequent view location work
 - `keyframe_interval_sec` is picked up by the encode loop without restarting the process
-- `quest_logcat` can start or stop adb capture after the autosaved config is written
-- `bitrate_mbps`, `resolution_scale`, `encoder_preset`, and `transport` apply when streaming or the encoder is recreated
+- `quest_logcat` can start or stop adb capture after the autosaved config is written; the runtime
+  clears headset logcat best-effort with a timeout before capture and continues if that clear fails
+- `bitrate_mbps`, `resolution_scale`, `refresh_rate_hz`, `encoder_preset`, `transport`,
+  `foveated_encoding_preset`, `client_foveation_preset`, `client_upscaling`,
+  `client_reprojection`, `abr_mode`, and `headset_audio` apply when streaming or the
+  encoder/client connection is recreated
 - file logger sink setup still requires a restart
 
 The Quest USB ADB section detects authorized `adb` devices, applies reverse mappings for ports `9944`, `9945`, and `9946`, then verifies them with `adb reverse --list`. This prepares the USB TCP transport; it is separate from Android `UsbManager` app permission prompts.

@@ -10,9 +10,13 @@ Current responsibilities:
   Godot/Unity candidates
 - create terminal launch scripts for app cards on macOS and Linux without changing the runtime
   manifest selection model
-- edit the shared runtime TOML keys for streaming, logging, encoder preset, and transport
+- edit the shared runtime TOML keys for streaming, logging, encoder preset, transport, refresh
+  rate, foveation, upscaling, and reserved headset-audio configuration
 - detect adb devices and configure Quest USB reverse mappings on ports `9944`, `9945`, and `9946`
 - report macOS WiFi readiness through `networksetup`; Linux keeps the lightweight transport message
+- run WiFi readiness, ADB status, device listing, reverse mapping reads, and reverse mapping
+  configuration on a serialized worker thread so slow `adb` or `networksetup` calls do not block
+  the UI
 - show runtime activity and streaming stats from `runtime_status.json`
 - register the selected OpenXR runtime on Linux through `${XDG_CONFIG_HOME:-~/.config}/openxr/1/active_runtime.json`
 - launch apps with the manually selected runtime manifest
@@ -43,6 +47,23 @@ The Streaming tab autosaves TOML edits after a short debounce. `Default` restore
 streaming, general runtime-enabled, and logging keys to their built-in defaults and writes the file
 immediately. `Reveal Runtime Logs` opens the platform state directory that contains
 `oxrsys-runtime.log`, `oxrsys-headset.log`, and `runtime_status.json` when those files exist.
+The bitrate slider uses the shared runtime range, `1` to `200` Mbps. The Qt simulator sends
+`ClientConnect.maxBitrateMbps = 0`, so it does not add a client-side bitrate cap and the runtime
+status `max_bitrate_mbps` follows the server config when the simulator connects.
+
+The Streaming tab also exposes the shared refresh-rate choices `60`, `72`, `80`, `90`, and `120`
+Hz, encoder presets `speed`, `balanced`, and `quality`, and server-side foveated encoding presets
+`off`, `light`, `medium`, and `high`. It also exposes `abr_mode` with `off`, `bitrate`, and `full`.
+The Headset Client section owns headset-side options:
+`auto` leaves Quest/PICO `XR_FB_foveation` unmanaged by Home, while `off`, `light`, `medium`,
+and `high` explicitly override the viewer swapchains. Quest shader upscaling and the reserved
+headset-audio toggle live there as well. `client_reprojection` controls Quest/PICO missing-frame
+smoothing with `off`, `pose`, and `pose_warp`. Audio is not reported active by the runtime until a
+real capture/playback stream is implemented.
+
+Transport readiness work is asynchronous. Qt Home shows checking/configuring status while the
+worker is running, ignores stale results after ADB path, selected serial, or transport changes, and
+keeps the previous main transport selection if USB validation fails.
 
 Platform behavior:
 

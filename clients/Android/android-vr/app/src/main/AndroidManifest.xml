@@ -24,10 +24,10 @@
         android:name="oculus.software.handtracking"
         android:required="false" />
     <uses-feature
-        android:name="android.hardware.usb.host"
+        android:name="com.oculus.feature.PASSTHROUGH"
         android:required="false" />
     <uses-feature
-        android:name="android.hardware.usb.accessory"
+        android:name="android.hardware.usb.host"
         android:required="false" />
 
     <!-- Package visibility for OpenXR runtime broker (Android 11+) -->
@@ -71,12 +71,6 @@
             <meta-data
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_device_filter" />
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
-            </intent-filter>
-            <meta-data
-                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
-                android:resource="@xml/usb_accessory_filter" />
         </activity>
     </application>
 </manifest>

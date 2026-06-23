@@ -7,16 +7,20 @@
 #include "Swapchain.h"
 #include "TrackingReceiver.h"
 #include "VideoEncoder.h"
+#include <oxrsys/protocol/Foveation.h>
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <limits>
 #include <numeric>
+#include <thread>
+#include <utility>
 
 #if !defined(_WIN32)
 #include <ifaddrs.h>
@@ -34,6 +38,9 @@ constexpr int kBestEffortSendFlags = MSG_DONTWAIT;
 #else
 constexpr int kBestEffortSendFlags = 0;
 #endif
+
+constexpr auto kTcpSendDeadline = std::chrono::milliseconds(100);
+constexpr auto kTcpSendRetrySleep = std::chrono::milliseconds(1);
 
 int64_t SteadyClockNowNs()
 {
@@ -56,6 +63,105 @@ size_t BoundedStringLength(const char* value, size_t capacity)
     return length;
 }
 
+oxr::protocol::FoveationPreset ParseFoveationPreset(const std::string& value)
+{
+    if (value == "light")
+    {
+        return oxr::protocol::FoveationPreset::Light;
+    }
+    if (value == "medium")
+    {
+        return oxr::protocol::FoveationPreset::Medium;
+    }
+    if (value == "high")
+    {
+        return oxr::protocol::FoveationPreset::High;
+    }
+    return oxr::protocol::FoveationPreset::Off;
+}
+
+oxr::protocol::ClientFoveationPreset ParseClientFoveationPreset(const std::string& value)
+{
+    if (value == "light")
+    {
+        return oxr::protocol::ClientFoveationPreset::Light;
+    }
+    if (value == "medium")
+    {
+        return oxr::protocol::ClientFoveationPreset::Medium;
+    }
+    if (value == "high")
+    {
+        return oxr::protocol::ClientFoveationPreset::High;
+    }
+    return oxr::protocol::ClientFoveationPreset::Off;
+}
+
+oxr::protocol::ClientReprojectionMode ParseClientReprojectionMode(const std::string& value)
+{
+    if (value == "off")
+    {
+        return oxr::protocol::ClientReprojectionMode::Off;
+    }
+    if (value == "pose_warp")
+    {
+        return oxr::protocol::ClientReprojectionMode::PoseWarp;
+    }
+    return oxr::protocol::ClientReprojectionMode::Pose;
+}
+
+const char* ClientReprojectionModeName(oxr::protocol::ClientReprojectionMode mode)
+{
+    switch (mode)
+    {
+        case oxr::protocol::ClientReprojectionMode::Off:
+            return "off";
+        case oxr::protocol::ClientReprojectionMode::PoseWarp:
+            return "pose_warp";
+        case oxr::protocol::ClientReprojectionMode::Pose:
+        default:
+            return "pose";
+    }
+}
+
+bool HasClientFoveationOverride(const std::string& value)
+{
+    return value == "off" || value == "light" || value == "medium" || value == "high";
+}
+
+bool PlatformSupportsFoveatedEncoding()
+{
+#if defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool HasClientCapability(const oxr::protocol::ClientConnect& clientConnect, uint32_t flag)
+{
+    return (clientConnect.clientCapabilities & flag) != 0;
+}
+
+VideoEncoder::FoveationSettings BuildEncoderFoveationSettings(
+    bool enabled,
+    const oxr::protocol::FoveationLayout& layout)
+{
+    VideoEncoder::FoveationSettings settings = {};
+    settings.enabled = enabled;
+    settings.targetEyeWidth = layout.targetEyeWidth;
+    settings.targetEyeHeight = layout.targetEyeHeight;
+    settings.eyeWidthRatio = layout.eyeWidthRatio;
+    settings.eyeHeightRatio = layout.eyeHeightRatio;
+    settings.centerSizeX = layout.parameters.centerSizeX;
+    settings.centerSizeY = layout.parameters.centerSizeY;
+    settings.centerShiftX = layout.parameters.centerShiftX;
+    settings.centerShiftY = layout.parameters.centerShiftY;
+    settings.edgeRatioX = layout.parameters.edgeRatioX;
+    settings.edgeRatioY = layout.parameters.edgeRatioY;
+    return settings;
+}
+
 bool IsGraphicsContextValid(const GraphicsContext& context)
 {
     if (context.api == GraphicsApi::Vulkan)
@@ -69,6 +175,7 @@ bool SendAll(SocketHandle socket, const void* data, size_t size)
 {
     const auto* bytes = static_cast<const uint8_t*>(data);
     size_t sentTotal = 0;
+    auto sendDeadline = Clock::now() + kTcpSendDeadline;
     while (sentTotal < size)
     {
         int sent = oxrsys::runtime_socket::Send(socket, bytes + sentTotal, size - sentTotal, 0);
@@ -76,6 +183,11 @@ bool SendAll(SocketHandle socket, const void* data, size_t size)
         {
             if (oxrsys::runtime_socket::IsInterruptedOrWouldBlock())
             {
+                if (Clock::now() >= sendDeadline)
+                {
+                    return false;
+                }
+                std::this_thread::sleep_for(kTcpSendRetrySleep);
                 continue;
             }
             return false;
@@ -85,6 +197,7 @@ bool SendAll(SocketHandle socket, const void* data, size_t size)
             return false;
         }
         sentTotal += static_cast<size_t>(sent);
+        sendDeadline = Clock::now() + kTcpSendDeadline;
     }
     return true;
 }
@@ -141,6 +254,7 @@ void ConfigureTcpSocket(SocketHandle socket)
 {
     oxrsys::runtime_socket::SetTcpNoDelay(socket);
     oxrsys::runtime_socket::SetNoSigpipe(socket);
+    oxrsys::runtime_socket::SetSendTimeout(socket, 0, 100000);
 }
 
 void CloseTcpSocket(SocketHandle& socket)
@@ -273,6 +387,7 @@ StreamingServer::~StreamingServer()
 
 bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_t refreshRateHz)
 {
+    (void)refreshRateHz;
     if (running_.load())
     {
         return false;
@@ -280,10 +395,10 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
 
     renderWidth_ = renderWidth;
     renderHeight_ = renderHeight;
-    refreshRateHz_ = refreshRateHz;
-    targetRefreshRateHz_.store(refreshRateHz);
 
     const ConfigValues config = Config::Get().GetValues();
+    refreshRateHz_ = config.refreshRateHz;
+    targetRefreshRateHz_.store(refreshRateHz_);
     wifiEnabled_ = config.streamingTransport != "usb_adb";
     usbAdbEnabled_ = config.streamingTransport != "wifi";
     float scale = config.resolutionScale;
@@ -291,9 +406,60 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
     scaledHeight_ = static_cast<uint32_t>(renderHeight * scale);
     scaledWidth_ = (scaledWidth_ + 15) & ~15u;
     scaledHeight_ = (scaledHeight_ + 15) & ~15u;
+    encodedWidth_ = scaledWidth_ * 2;
+    encodedHeight_ = scaledHeight_;
+    foveatedTargetEyeWidth_ = scaledWidth_;
+    foveatedTargetEyeHeight_ = scaledHeight_;
+    foveatedEncodingActive_ = false;
+    clientFoveatedEncodingActive_.store(false);
 
-    spdlog::info("StreamingServer: Resolution scaling {:.0f}%: {}x{} -> {}x{} per eye",
-                  scale * 100.0f, renderWidth, renderHeight, scaledWidth_, scaledHeight_);
+    const oxr::protocol::FoveationPreset foveationPreset =
+        ParseFoveationPreset(config.foveatedEncodingPreset);
+    if (foveationPreset != oxr::protocol::FoveationPreset::Off &&
+        PlatformSupportsFoveatedEncoding() &&
+        IsGraphicsContextValid(graphicsContext_) &&
+        VideoEncoder::SupportsFoveatedEncoding(graphicsContext_))
+    {
+        const bool unscaledFoveationTarget = std::fabs(scale - 1.0f) <= 0.001f;
+        foveatedTargetEyeWidth_ = unscaledFoveationTarget ? renderWidth_ : scaledWidth_;
+        foveatedTargetEyeHeight_ = unscaledFoveationTarget ? renderHeight_ : scaledHeight_;
+        const oxr::protocol::FoveationLayout layout =
+            oxr::protocol::CalculateFoveationLayout(foveatedTargetEyeWidth_,
+                                                    foveatedTargetEyeHeight_,
+                                                    foveationPreset);
+        if (unscaledFoveationTarget &&
+            oxr::protocol::IsFoveatedEncodingLayoutUsable(
+                layout, renderWidth_, renderHeight_))
+        {
+            encodedWidth_ = layout.optimizedEyeWidth * 2;
+            encodedHeight_ = layout.optimizedEyeHeight;
+            foveatedEncodingActive_ = encodedWidth_ < renderWidth_ * 2 ||
+                                      encodedHeight_ < renderHeight_;
+        }
+        else
+        {
+            foveatedTargetEyeWidth_ = scaledWidth_;
+            foveatedTargetEyeHeight_ = scaledHeight_;
+            spdlog::warn("StreamingServer: foveated encoding preset '{}' is configured but resolution_scale={:.2f} cannot be announced coherently; advertising normal video",
+                         config.foveatedEncodingPreset,
+                         scale);
+        }
+    }
+    else if (foveationPreset != oxr::protocol::FoveationPreset::Off)
+    {
+        spdlog::warn("StreamingServer: foveated encoding preset '{}' is configured but unavailable; advertising normal video",
+                     config.foveatedEncodingPreset);
+    }
+
+    spdlog::info("StreamingServer: Resolution scaling {:.0f}%: {}x{} -> {}x{} per eye, encoded {}x{}{}",
+                  scale * 100.0f,
+                  renderWidth,
+                  renderHeight,
+                  scaledWidth_,
+                  scaledHeight_,
+                  encodedWidth_,
+                  encodedHeight_,
+                  foveatedEncodingActive_ ? " with foveated encoding" : "");
 
     broadcastSocket_ = oxrsys::runtime_socket::Create(AF_INET, SOCK_DGRAM, 0);
     if (!oxrsys::runtime_socket::IsValid(broadcastSocket_))
@@ -386,6 +552,7 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
         broadcastThread_ = std::thread(&StreamingServer::BroadcastThread, this);
     }
     controlThread_ = std::thread(&StreamingServer::ControlThread, this);
+    videoSendThread_ = std::thread(&StreamingServer::VideoSendThread, this);
     encodeThread_ = std::thread(&StreamingServer::EncodeThread, this);
 
     std::string ip = GetLocalIpAddress();
@@ -400,6 +567,7 @@ void StreamingServer::Stop()
     running_.store(false);
     state_.store(State::Stopped);
     frameQueue_.Stop();
+    videoSendCv_.notify_all();
     RuntimeStatus::SetIdle();
     SendUsbDisconnectBestEffort();
     StopUsbTcpSockets();
@@ -416,7 +584,7 @@ void StreamingServer::Stop()
         clientIp_.clear();
         clientName_.clear();
         clientPort_ = 0;
-        clientUsesUsbAdb_ = false;
+        clientUsesUsbAdb_.store(false);
     }
 
     oxrsys::runtime_socket::Close(broadcastSocket_);
@@ -435,6 +603,10 @@ void StreamingServer::Stop()
     {
         encodeThread_.join();
     }
+    if (videoSendThread_.joinable())
+    {
+        videoSendThread_.join();
+    }
     if (tcpControlThread_.joinable())
     {
         tcpControlThread_.join();
@@ -448,6 +620,7 @@ void StreamingServer::Stop()
         tcpTrackingThread_.join();
     }
     frameQueue_.Clear();
+    ClearVideoSendQueue();
 
     if (trackingReceiver_ != nullptr)
     {
@@ -495,15 +668,57 @@ oxr::protocol::ServerAnnounce StreamingServer::BuildServerAnnounce() const
     oxr::protocol::ServerAnnounce announce = {};
     announce.type = oxr::protocol::MessageType::ServerAnnounce;
     announce.versionMajor = 1;
-    announce.versionMinor = 0;
+    announce.versionMinor = 1;
     announce.videoPort = oxr::protocol::VIDEO_PORT;
     announce.trackingPort = oxr::protocol::TRACKING_PORT;
     announce.renderWidth = renderWidth_ * 2;
     announce.renderHeight = renderHeight_;
     announce.refreshRateHz = refreshRateHz_;
-    announce.encodedWidth = scaledWidth_ * 2;
-    announce.encodedHeight = scaledHeight_;
+    announce.encodedWidth = encodedWidth_;
+    announce.encodedHeight = encodedHeight_;
     strncpy(announce.serverName, "OXRSys Runtime", sizeof(announce.serverName) - 1);
+
+    const ConfigValues config = Config::Get().GetValues();
+    const oxr::protocol::FoveationPreset foveationPreset =
+        foveatedEncodingActive_
+            ? ParseFoveationPreset(config.foveatedEncodingPreset)
+            : oxr::protocol::FoveationPreset::Off;
+    const oxr::protocol::FoveationLayout layout =
+        oxr::protocol::CalculateFoveationLayout(foveatedTargetEyeWidth_,
+                                                foveatedTargetEyeHeight_,
+                                                foveationPreset);
+
+    if (foveatedEncodingActive_)
+    {
+        announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_FOVEATED_ENCODING;
+    }
+    oxr::protocol::ClientFoveationPreset clientFoveationPreset =
+        ParseClientFoveationPreset(config.clientFoveationPreset);
+    if (HasClientFoveationOverride(config.clientFoveationPreset))
+    {
+        announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_CLIENT_FOVEATION;
+    }
+    if (config.clientUpscaling)
+    {
+        announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_CLIENT_UPSCALING;
+    }
+    // Headset audio is part of the wire protocol, but the stream is advertised
+    // only once an actual capture/playback path is attached.
+
+    announce.audioPort = oxr::protocol::AUDIO_PORT;
+    announce.foveatedEncodingPreset = foveationPreset;
+    announce.clientFoveationPreset = clientFoveationPreset;
+    announce.clientUpscalingMode = config.clientUpscaling
+        ? oxr::protocol::ClientUpscalingMode::SnapdragonGsr
+        : oxr::protocol::ClientUpscalingMode::Off;
+    announce.clientReprojectionMode = ParseClientReprojectionMode(config.clientReprojectionMode);
+    announce.audioSampleRateHz = 48000;
+    announce.foveationCenterSizeX = layout.parameters.centerSizeX;
+    announce.foveationCenterSizeY = layout.parameters.centerSizeY;
+    announce.foveationCenterShiftX = layout.parameters.centerShiftX;
+    announce.foveationCenterShiftY = layout.parameters.centerShiftY;
+    announce.foveationEdgeRatioX = layout.parameters.edgeRatioX;
+    announce.foveationEdgeRatioY = layout.parameters.edgeRatioY;
     return announce;
 }
 
@@ -530,11 +745,14 @@ void StreamingServer::ControlThread()
 
         uint8_t type = buffer[0];
         if (type == static_cast<uint8_t>(oxr::protocol::MessageType::ClientConnect) &&
-            received >= static_cast<int>(sizeof(oxr::protocol::ClientConnect)))
+            received >= static_cast<int>(oxr::protocol::CLIENT_CONNECT_BASE_SIZE))
         {
             if (wifiEnabled_)
             {
-                HandleClientConnect(*reinterpret_cast<oxr::protocol::ClientConnect*>(buffer), clientAddr);
+                oxr::protocol::ClientConnect clientConnect = {};
+                memcpy(&clientConnect, buffer, std::min<size_t>(
+                    static_cast<size_t>(received), sizeof(clientConnect)));
+                HandleClientConnect(clientConnect, clientAddr);
             }
         }
         else if (type == static_cast<uint8_t>(oxr::protocol::MessageType::ServerDisconnect))
@@ -648,10 +866,12 @@ void StreamingServer::TcpControlThread()
             }
 
             if (header.type == oxr::protocol::TcpRecordType::ClientConnect &&
-                payload.size() >= sizeof(oxr::protocol::ClientConnect))
+                payload.size() >= oxr::protocol::CLIENT_CONNECT_BASE_SIZE)
             {
-                HandleUsbClientConnect(*reinterpret_cast<const oxr::protocol::ClientConnect*>(
-                    payload.data()));
+                oxr::protocol::ClientConnect clientConnect = {};
+                memcpy(&clientConnect, payload.data(),
+                       std::min(payload.size(), sizeof(clientConnect)));
+                HandleUsbClientConnect(clientConnect);
             }
             else if (header.type == oxr::protocol::TcpRecordType::Control)
             {
@@ -680,7 +900,7 @@ void StreamingServer::TcpControlThread()
         {
             CloseTcpSocket(clientSocket);
         }
-        if (clientUsesUsbAdb_)
+        if (clientUsesUsbAdb_.load())
         {
             HandleClientDisconnect();
         }
@@ -709,10 +929,11 @@ void StreamingServer::TcpVideoThread()
         }
         {
             std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
-            if (clientUsesUsbAdb_)
+            if (clientUsesUsbAdb_.load())
             {
                 packetDispatchState_->videoSocket = clientSocket;
                 packetDispatchState_->videoUsesTcp = true;
+                packetDispatchState_->acceptingPackets = true;
             }
         }
 
@@ -828,78 +1049,59 @@ void StreamingServer::EncodeThread()
             encoder->ForceKeyframe();
         }
 
-        // Send render pose as a video-channel packet before the frame data.
-        // The client uses this to set the correct composition layer pose for ATW.
+        auto encodedFrame = std::make_shared<EncodedVideoFrame>();
+        encodedFrame->frameIndex = frame.frameIndex;
+        encodedFrame->timestampNs = frame.timestampNs;
+        encodedFrame->hasPose = frame.hasPose;
         if (frame.hasPose)
         {
-            std::string clientIp;
-            SocketHandle videoSocket = oxrsys::runtime_socket::InvalidSocket;
-            bool videoUsesTcp = false;
-            {
-                std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
-                if (packetDispatchState_->acceptingPackets)
-                {
-                    clientIp = packetDispatchState_->clientIp;
-                    videoSocket = packetDispatchState_->videoSocket;
-                    videoUsesTcp = packetDispatchState_->videoUsesTcp;
-                }
-            }
-            if (videoUsesTcp && oxrsys::runtime_socket::IsValid(videoSocket))
-            {
-                oxr::protocol::TcpRenderPose pose = {};
-                pose.frameIndex = frame.frameIndex;
-                pose.presentationTimeNs = frame.timestampNs;
-                memcpy(pose.position, frame.headPosition, sizeof(float) * 3);
-                memcpy(pose.orientation, frame.headOrientation, sizeof(float) * 4);
-
-                std::lock_guard<std::mutex> sendLock(packetDispatchState_->sendMutex);
-                SendTcpRecord(videoSocket, oxr::protocol::TcpRecordType::RenderPose,
-                              &pose, sizeof(pose));
-            }
-            else if (!clientIp.empty() && oxrsys::runtime_socket::IsValid(videoSocket))
-            {
-                // Payload: 7 floats (position[3] + orientation[4])
-                float posePayload[7];
-                memcpy(posePayload, frame.headPosition, sizeof(float) * 3);
-                memcpy(posePayload + 3, frame.headOrientation, sizeof(float) * 4);
-
-                oxr::protocol::VideoPacketHeader poseHeader = {};
-                poseHeader.frameIndex = frame.frameIndex;
-                poseHeader.packetIndex = 0;
-                poseHeader.totalPackets = 0;  // 0 totalPackets = metadata, not data
-                poseHeader.payloadSize = sizeof(posePayload);
-                poseHeader.flags = oxr::protocol::VIDEO_FLAG_RENDER_POSE;
-                poseHeader.codec = static_cast<uint8_t>(oxr::protocol::VideoCodec::H265);
-                poseHeader.presentationTimeNs = frame.timestampNs;
-
-                uint8_t buf[sizeof(poseHeader) + sizeof(posePayload)];
-                memcpy(buf, &poseHeader, sizeof(poseHeader));
-                memcpy(buf + sizeof(poseHeader), posePayload, sizeof(posePayload));
-
-                sockaddr_in destAddr = {};
-                destAddr.sin_family = AF_INET;
-                destAddr.sin_port = htons(oxr::protocol::VIDEO_PORT);
-                inet_pton(AF_INET, clientIp.c_str(), &destAddr.sin_addr);
-                oxrsys::runtime_socket::SendTo(videoSocket,
-                                               buf,
-                                               sizeof(buf),
-                                               kBestEffortSendFlags,
-                                               (sockaddr*)&destAddr,
-                                               sizeof(destAddr));
-            }
+            memcpy(encodedFrame->headPosition, frame.headPosition, sizeof(float) * 3);
+            memcpy(encodedFrame->headOrientation, frame.headOrientation, sizeof(float) * 4);
         }
 
+        const uint32_t submittedFrameIndex = frame.frameIndex;
         bool encoded = encoder->EncodeStereo(
-            frame.source.leftTexture,
-            frame.source.rightTexture,
+            std::move(frame.source),
             frame.timestampNs,
-            [packetDispatchState, frameIndex = frame.frameIndex, timestampNs = frame.timestampNs](
-                const uint8_t* nalData, size_t nalSize, bool isKeyframe, int64_t /*pts*/)
+            [encodedFrame](const uint8_t* nalData, size_t nalSize, bool isKeyframe, int64_t /*pts*/)
             {
-                SendNalUnit(packetDispatchState, frameIndex, nalData, nalSize, isKeyframe, timestampNs);
+                if (nalData == nullptr || nalSize == 0 ||
+                    nalSize > oxr::protocol::TCP_MAX_RECORD_PAYLOAD - sizeof(oxr::protocol::TcpVideoNalHeader))
+                {
+                    return;
+                }
+
+                EncodedNalUnit nal = {};
+                nal.isKeyframe = isKeyframe;
+                nal.tcpPayload.resize(sizeof(oxr::protocol::TcpVideoNalHeader) + nalSize);
+
+                oxr::protocol::TcpVideoNalHeader nalHeader = {};
+                nalHeader.presentationTimeNs = encodedFrame->timestampNs;
+                nalHeader.frameIndex = encodedFrame->frameIndex;
+                nalHeader.payloadSize = static_cast<uint32_t>(nalSize);
+                nalHeader.flags = oxr::protocol::VIDEO_FLAG_STEREO;
+                if (isKeyframe)
+                {
+                    nalHeader.flags |= oxr::protocol::VIDEO_FLAG_KEYFRAME;
+                }
+                nalHeader.codec = static_cast<uint8_t>(oxr::protocol::VideoCodec::H265);
+
+                memcpy(nal.tcpPayload.data(), &nalHeader, sizeof(nalHeader));
+                memcpy(nal.tcpPayload.data() + sizeof(nalHeader), nalData, nalSize);
+                encodedFrame->nals.push_back(std::move(nal));
             },
-            [this, telemetry, queueWaitMs, encoder](const VideoEncoder::FrameMetrics& metrics)
+            [this, telemetry, queueWaitMs, encoder, config, encodedFrame](
+                const VideoEncoder::FrameMetrics& metrics)
             {
+                if (!metrics.frameDropped && !encodedFrame->nals.empty())
+                {
+                    QueueEncodedVideoFrame(std::move(*encodedFrame));
+                }
+                else if (metrics.frameDropped)
+                {
+                    encoderDroppedFramesTotalForAbr_.fetch_add(1);
+                }
+
                 telemetry->gpuCopyMs.Add(metrics.gpuCopyMs);
                 telemetry->encodeSubmitMs.Add(metrics.encodeSubmitMs);
                 telemetry->callbackLatencyMs.Add(metrics.callbackLatencyMs);
@@ -927,6 +1129,19 @@ void StreamingServer::EncodeThread()
                     const uint32_t encoderDrops = encoder->GetDroppedFrameCount();
                     const uint32_t keyframeRequests = requestKeyframeCount_.exchange(0);
                     const uint32_t pendingDepthMax = pendingFrameDepthMax_.exchange(0);
+                    const uint32_t videoSendDepthMax = videoSendQueueDepthMax_.exchange(0);
+                    const uint32_t videoSendDrops = videoSendDroppedFrames_.exchange(0);
+                    const uint32_t videoTcpFailures = videoTcpSendFailures_.exchange(0);
+                    const uint32_t udpRetransmits = videoUdpRetransmittedPackets_.exchange(0);
+                    std::string abrModeName;
+                    std::string abrStateName;
+                    std::string abrProfileName;
+                    {
+                        std::lock_guard<std::mutex> abrLock(abrStateMutex_);
+                        abrModeName = abrModeName_;
+                        abrStateName = abrStateName_;
+                        abrProfileName = abrProfileName_;
+                    }
 
                     RuntimeStatus::StreamingStats stats = {};
                     stats.refreshRateHz = targetRefreshRateHz_.load();
@@ -934,8 +1149,20 @@ void StreamingServer::EncodeThread()
                     stats.maxBitrateMbps = configMaxBitrateMbps_.load();
                     stats.renderWidth = renderWidth_ * 2;
                     stats.renderHeight = renderHeight_;
-                    stats.encodedWidth = scaledWidth_ * 2;
-                    stats.encodedHeight = scaledHeight_;
+                    stats.encodedWidth = encodedWidth_;
+                    stats.encodedHeight = encodedHeight_;
+                    stats.encoderPreset = config.encoderPreset;
+                    stats.foveatedEncodingPreset = clientFoveatedEncodingActive_.load()
+                        ? config.foveatedEncodingPreset
+                        : "off";
+                    stats.clientFoveationPreset = config.clientFoveationPreset;
+                    stats.clientUpscaling = config.clientUpscaling;
+                    stats.clientReprojectionMode =
+                        ClientReprojectionModeName(clientReprojectionMode_.load());
+                    stats.abrMode = abrModeName;
+                    stats.abrState = abrStateName;
+                    stats.abrProfile = abrProfileName;
+                    stats.headsetAudio = false;
                     stats.serverPipelineLatencyMs = serverPipelineLatencyMs_.load();
                     stats.clientPipelineLatencyMs = clientPipelineLatencyMs_.load();
                     stats.clientReceiveToSubmitMs = clientReceiveToSubmitMs_.load();
@@ -943,6 +1170,7 @@ void StreamingServer::EncodeThread()
                     stats.clientCompositorMs = clientCompositorLatencyMs_.load();
                     stats.predictionHorizonMs = trackingReceiver_ ?
                         trackingReceiver_->GetPredictionHorizonMs() : 0.0f;
+                    stats.displayedFrameAgeMs = clientDisplayedFrameAgeMs_.load();
                     stats.encodeQueueAverageMs = queueSummary.average;
                     stats.encodeQueueP95Ms = queueSummary.p95;
                     stats.encodeGpuAverageMs = gpuSummary.average;
@@ -958,12 +1186,20 @@ void StreamingServer::EncodeThread()
                     stats.replacedFramesDelta = replacedFrames;
                     stats.keyframeRequestsDelta = keyframeRequests;
                     stats.pendingDepthMax = pendingDepthMax;
+                    stats.videoSendQueueDepthMax = videoSendDepthMax;
+                    stats.videoSendDroppedFramesDelta = videoSendDrops;
+                    stats.videoTcpSendFailuresDelta = videoTcpFailures;
+                    stats.videoUdpRetransmittedPacketsDelta = udpRetransmits;
+                    stats.reprojectedFramesDelta = clientReprojectedFramesDelta_.load();
+                    stats.staleFrameReusesDelta = clientStaleFrameReusesDelta_.load();
+                    stats.renderPoseFallbacksDelta = clientRenderPoseFallbacksDelta_.load();
                     RuntimeStatus::SetStreamingStats(stats);
 
                     spdlog::info(
                         "StreamingServer: encode queue(avg/p95={:.2f}/{:.2f}ms) gpu({:.2f}/{:.2f}) "
                         "submit({:.3f}/{:.3f}) callback({:.2f}/{:.2f}) total({:.2f}/{:.2f}) "
-                        "replaced={} encDrops={} keyframeReq={} depthMax={}",
+                        "replaced={} encDrops={} keyframeReq={} depthMax={} sendDepth={} sendDrops={} "
+                        "tcpFail={} udpRetrans={} abr={}/{} profile={} displayedAge={:.2f}ms reproj={} stale={} poseFallbacks={}",
                         queueSummary.average, queueSummary.p95,
                         gpuSummary.average, gpuSummary.p95,
                         submitSummary.average, submitSummary.p95,
@@ -972,7 +1208,18 @@ void StreamingServer::EncodeThread()
                         replacedFrames,
                         encoderDrops,
                         keyframeRequests,
-                        pendingDepthMax);
+                        pendingDepthMax,
+                        videoSendDepthMax,
+                        videoSendDrops,
+                        videoTcpFailures,
+                        udpRetransmits,
+                        abrModeName,
+                        abrStateName,
+                        abrProfileName,
+                        clientDisplayedFrameAgeMs_.load(),
+                        clientReprojectedFramesDelta_.load(),
+                        clientStaleFrameReusesDelta_.load(),
+                        clientRenderPoseFallbacksDelta_.load());
 
                     telemetry->lastLogTime = now;
                 }
@@ -990,7 +1237,7 @@ void StreamingServer::EncodeThread()
         if (++logFrameCounter <= 5 || logFrameCounter % 300 == 0)
         {
             spdlog::info("StreamingServer: queued frame #{} encodeSubmitted={} queueWait={:.2f}ms inflight={}",
-                          frame.frameIndex, encoded, queueWaitMs, encoder->GetInFlightFrameCount());
+                          submittedFrameIndex, encoded, queueWaitMs, encoder->GetInFlightFrameCount());
         }
     }
 
@@ -1010,13 +1257,14 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
         clientIp_ = ipStr;
         clientPort_ = ntohs(clientAddr.sin_port);
         clientName_ = clientName;
-        clientUsesUsbAdb_ = false;
+        clientUsesUsbAdb_.store(false);
     }
     {
         std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
         packetDispatchState_->clientIp = ipStr;
         packetDispatchState_->videoSocket = videoSocket_;
         packetDispatchState_->videoUsesTcp = false;
+        packetDispatchState_->acceptingPackets = true;
     }
     uint32_t negotiatedRefresh = clientConnect.refreshRateHz > 0
         ? clientConnect.refreshRateHz
@@ -1038,15 +1286,49 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
         if (IsGraphicsContextValid(graphicsContext_))
         {
             const ConfigValues config = Config::Get().GetValues();
-            uint32_t bitrateMbps = (clientConnect.maxBitrateMbps > 0)
+            uint32_t bitrateMbps =
+                (clientConnect.maxBitrateMbps != oxr::protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG)
                 ? std::min(config.bitrateMbps, clientConnect.maxBitrateMbps)
                 : config.bitrateMbps;
             configMaxBitrateMbps_.store(bitrateMbps);
             currentBitrateMbps_.store(bitrateMbps);
-            lastBitrateIncreaseTimeNs_ = SteadyClockNowNs();
             lastKeyframeRequestCountForAbr_ = 0;
-            uint32_t stereoWidth = scaledWidth_ * 2;
-            if (encoder_->Initialize(stereoWidth, scaledHeight_, negotiatedRefresh,
+            lastVideoSendDroppedFrameCountForAbr_ = 0;
+            lastEncoderDroppedFrameCountForAbr_ = 0;
+            requestKeyframeTotalForAbr_.store(0);
+            videoSendDroppedFramesTotalForAbr_.store(0);
+            encoderDroppedFramesTotalForAbr_.store(0);
+            abrController_.Reset(oxrsys::streaming_abr::ParseMode(config.abrMode),
+                                 bitrateMbps,
+                                 bitrateMbps);
+            {
+                std::lock_guard<std::mutex> abrLock(abrStateMutex_);
+                abrModeName_ = oxrsys::streaming_abr::ToString(
+                    oxrsys::streaming_abr::ParseMode(config.abrMode));
+                abrStateName_ = "stable";
+                abrProfileName_ = config.abrMode == "full" ? "balanced" : "bitrate";
+            }
+            const oxr::protocol::FoveationPreset foveationPreset =
+                foveatedEncodingActive_
+                    ? ParseFoveationPreset(config.foveatedEncodingPreset)
+                    : oxr::protocol::FoveationPreset::Off;
+            const oxr::protocol::FoveationLayout layout =
+                oxr::protocol::CalculateFoveationLayout(foveatedTargetEyeWidth_,
+                                                        foveatedTargetEyeHeight_,
+                                                        foveationPreset);
+            const bool clientSupportsFoveatedEncoding =
+                HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_FOVEATED_ENCODING);
+            const bool useFoveatedEncoding =
+                foveatedEncodingActive_ && clientSupportsFoveatedEncoding;
+            clientFoveatedEncodingActive_.store(useFoveatedEncoding);
+            encoder_->SetFoveationSettings(BuildEncoderFoveationSettings(
+                useFoveatedEncoding, layout));
+            if (foveatedEncodingActive_ && !clientSupportsFoveatedEncoding)
+            {
+                spdlog::warn("StreamingServer: client '{}' did not advertise foveated encoding support; sending reduced normal video",
+                             clientName);
+            }
+            if (encoder_->Initialize(encodedWidth_, encodedHeight_, negotiatedRefresh,
                                      bitrateMbps, graphicsContext_))
             {
                 encoder_->ForceKeyframe();
@@ -1090,7 +1372,7 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         clientIp_ = "127.0.0.1";
         clientPort_ = oxr::protocol::CONTROL_PORT;
         clientName_ = clientName;
-        clientUsesUsbAdb_ = true;
+        clientUsesUsbAdb_.store(true);
     }
     {
         std::lock_guard<std::mutex> tcpLock(tcpSocketMutex_);
@@ -1098,6 +1380,7 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         packetDispatchState_->clientIp.clear();
         packetDispatchState_->videoSocket = tcpVideoClientSocket_;
         packetDispatchState_->videoUsesTcp = true;
+        packetDispatchState_->acceptingPackets = true;
     }
     uint32_t negotiatedRefresh = clientConnect.refreshRateHz > 0
         ? clientConnect.refreshRateHz
@@ -1119,15 +1402,49 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         if (IsGraphicsContextValid(graphicsContext_))
         {
             const ConfigValues config = Config::Get().GetValues();
-            uint32_t bitrateMbps = (clientConnect.maxBitrateMbps > 0)
+            uint32_t bitrateMbps =
+                (clientConnect.maxBitrateMbps != oxr::protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG)
                 ? std::min(config.bitrateMbps, clientConnect.maxBitrateMbps)
                 : config.bitrateMbps;
             configMaxBitrateMbps_.store(bitrateMbps);
             currentBitrateMbps_.store(bitrateMbps);
-            lastBitrateIncreaseTimeNs_ = SteadyClockNowNs();
             lastKeyframeRequestCountForAbr_ = 0;
-            uint32_t stereoWidth = scaledWidth_ * 2;
-            if (encoder_->Initialize(stereoWidth, scaledHeight_, negotiatedRefresh,
+            lastVideoSendDroppedFrameCountForAbr_ = 0;
+            lastEncoderDroppedFrameCountForAbr_ = 0;
+            requestKeyframeTotalForAbr_.store(0);
+            videoSendDroppedFramesTotalForAbr_.store(0);
+            encoderDroppedFramesTotalForAbr_.store(0);
+            abrController_.Reset(oxrsys::streaming_abr::ParseMode(config.abrMode),
+                                 bitrateMbps,
+                                 bitrateMbps);
+            {
+                std::lock_guard<std::mutex> abrLock(abrStateMutex_);
+                abrModeName_ = oxrsys::streaming_abr::ToString(
+                    oxrsys::streaming_abr::ParseMode(config.abrMode));
+                abrStateName_ = "stable";
+                abrProfileName_ = config.abrMode == "full" ? "balanced" : "bitrate";
+            }
+            const oxr::protocol::FoveationPreset foveationPreset =
+                foveatedEncodingActive_
+                    ? ParseFoveationPreset(config.foveatedEncodingPreset)
+                    : oxr::protocol::FoveationPreset::Off;
+            const oxr::protocol::FoveationLayout layout =
+                oxr::protocol::CalculateFoveationLayout(foveatedTargetEyeWidth_,
+                                                        foveatedTargetEyeHeight_,
+                                                        foveationPreset);
+            const bool clientSupportsFoveatedEncoding =
+                HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_FOVEATED_ENCODING);
+            const bool useFoveatedEncoding =
+                foveatedEncodingActive_ && clientSupportsFoveatedEncoding;
+            clientFoveatedEncodingActive_.store(useFoveatedEncoding);
+            encoder_->SetFoveationSettings(BuildEncoderFoveationSettings(
+                useFoveatedEncoding, layout));
+            if (foveatedEncodingActive_ && !clientSupportsFoveatedEncoding)
+            {
+                spdlog::warn("StreamingServer: USB client '{}' did not advertise foveated encoding support; sending reduced normal video",
+                             clientName);
+            }
+            if (encoder_->Initialize(encodedWidth_, encodedHeight_, negotiatedRefresh,
                                      bitrateMbps, graphicsContext_))
             {
                 encoder_->ForceKeyframe();
@@ -1153,7 +1470,7 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
     if (!encoderReady)
     {
         RuntimeStatus::SetIdle();
-        clientUsesUsbAdb_ = false;
+        clientUsesUsbAdb_.store(false);
         state_.store(State::Broadcasting);
         if (wifiEnabled_ && running_.load())
         {
@@ -1175,13 +1492,14 @@ void StreamingServer::HandleClientDisconnect()
     bool wasUsbClient = false;
     {
         std::lock_guard<std::mutex> lock(clientMutex_);
-        hadClient = clientUsesUsbAdb_ || !clientIp_.empty() ||
+        const bool usbClient = clientUsesUsbAdb_.load();
+        hadClient = usbClient || !clientIp_.empty() ||
                     !clientName_.empty() || clientPort_ != 0;
-        wasUsbClient = clientUsesUsbAdb_;
+        wasUsbClient = usbClient;
         clientIp_.clear();
         clientName_.clear();
         clientPort_ = 0;
-        clientUsesUsbAdb_ = false;
+        clientUsesUsbAdb_.store(false);
     }
     if (previousState != State::Connected && !hadClient)
     {
@@ -1204,6 +1522,7 @@ void StreamingServer::HandleClientDisconnect()
 
     {
         frameQueue_.Clear();
+        ClearVideoSendQueue();
     }
 
     {
@@ -1212,6 +1531,18 @@ void StreamingServer::HandleClientDisconnect()
     }
 
     targetRefreshRateHz_.store(refreshRateHz_);
+    clientFoveatedEncodingActive_.store(false);
+    clientDisplayedFrameAgeMs_.store(0.0f);
+    clientReprojectedFramesDelta_.store(0);
+    clientStaleFrameReusesDelta_.store(0);
+    clientRenderPoseFallbacksDelta_.store(0);
+    clientReprojectionMode_.store(oxr::protocol::ClientReprojectionMode::Off);
+    requestKeyframeTotalForAbr_.store(0);
+    videoSendDroppedFramesTotalForAbr_.store(0);
+    encoderDroppedFramesTotalForAbr_.store(0);
+    lastKeyframeRequestCountForAbr_ = 0;
+    lastVideoSendDroppedFrameCountForAbr_ = 0;
+    lastEncoderDroppedFrameCountForAbr_ = 0;
     UpdatePredictionHorizon();
 
     if (previousState == State::Connected && broadcastThread_.joinable())
@@ -1233,50 +1564,57 @@ void StreamingServer::HandleLatencyReport(const oxr::protocol::LatencyReport& re
     clientReceiveToSubmitMs_.store(report.receiveToDecoderSubmitMs);
     clientDecodeLatencyMs_.store(report.decodeLatencyMs);
     clientCompositorLatencyMs_.store(report.compositorLatencyMs);
+    clientDisplayedFrameAgeMs_.store(report.displayedFrameAgeMs);
+    clientReprojectedFramesDelta_.store(report.reprojectedFrames);
+    clientStaleFrameReusesDelta_.store(report.staleFrameReuses);
+    clientRenderPoseFallbacksDelta_.store(report.renderPoseFallbacks);
+    clientReprojectionMode_.store(report.reprojectionMode);
 
     float previous = clientPipelineLatencyMs_.load();
     float smoothed = previous * 0.8f + report.totalClientLatencyMs * 0.2f;
     clientPipelineLatencyMs_.store(smoothed);
     UpdatePredictionHorizon();
 
-    // Adaptive bitrate: adjust based on latency trends and keyframe request frequency
+    // Adaptive bitrate: use sliding-window client health signals with fast downshift
+    // and slow recovery to avoid oscillation.
     {
         uint32_t currentBitrate = currentBitrateMbps_.load();
-        int64_t nowNs = SteadyClockNowNs();
-        uint32_t keyframeRequests = requestKeyframeCount_.load();
+        uint32_t keyframeRequests = requestKeyframeTotalForAbr_.load();
         uint32_t newKeyframeRequests = keyframeRequests - lastKeyframeRequestCountForAbr_;
         lastKeyframeRequestCountForAbr_ = keyframeRequests;
+        uint32_t videoSendDroppedFrames = videoSendDroppedFramesTotalForAbr_.load();
+        uint32_t newVideoSendDrops =
+            videoSendDroppedFrames - lastVideoSendDroppedFrameCountForAbr_;
+        lastVideoSendDroppedFrameCountForAbr_ = videoSendDroppedFrames;
+        uint32_t encoderDroppedFrames = encoderDroppedFramesTotalForAbr_.load();
+        uint32_t newEncoderDrops =
+            encoderDroppedFrames - lastEncoderDroppedFrameCountForAbr_;
+        lastEncoderDroppedFrameCountForAbr_ = encoderDroppedFrames;
 
-        // Target: keep total client latency under 30ms with no recent keyframe requests
-        constexpr float kLatencyTargetMs = 30.0f;
-        constexpr float kLatencyHighMs = 45.0f;
-        constexpr uint32_t kMinBitrateMbps = 10;
-        constexpr int64_t kIncreaseIntervalNs = 5LL * 1000000000; // 5 seconds
+        oxrsys::streaming_abr::Sample sample = {};
+        sample.totalClientLatencyMs = smoothed;
+        sample.displayedFrameAgeMs = report.displayedFrameAgeMs;
+        sample.keyframeRequestsDelta = newKeyframeRequests;
+        sample.videoSendDroppedFramesDelta = newVideoSendDrops;
+        sample.encoderDroppedFramesDelta = newEncoderDrops;
+        sample.reprojectedFramesDelta = report.reprojectedFrames;
+        sample.staleFrameReusesDelta = report.staleFrameReuses;
+        sample.renderPoseFallbacksDelta = report.renderPoseFallbacks;
 
-        bool shouldDecrease = (smoothed > kLatencyHighMs) || (newKeyframeRequests > 0);
-        bool canIncrease = (smoothed < kLatencyTargetMs) && (newKeyframeRequests == 0) &&
-                           (nowNs - lastBitrateIncreaseTimeNs_ >= kIncreaseIntervalNs) &&
-                           (currentBitrate < configMaxBitrateMbps_.load());
-
-        uint32_t newBitrate = currentBitrate;
-        if (shouldDecrease && currentBitrate > kMinBitrateMbps)
+        oxrsys::streaming_abr::Decision decision = abrController_.Update(sample);
         {
-            newBitrate = std::max(currentBitrate * 9 / 10, kMinBitrateMbps); // -10%
+            std::lock_guard<std::mutex> abrLock(abrStateMutex_);
+            abrStateName_ = oxrsys::streaming_abr::ToString(decision.state);
+            abrProfileName_ = decision.profile;
         }
-        else if (canIncrease)
-        {
-            newBitrate = std::min(currentBitrate + currentBitrate / 20,
-                                  configMaxBitrateMbps_.load()); // +5%
-            lastBitrateIncreaseTimeNs_ = nowNs;
-        }
 
-        if (newBitrate != currentBitrate)
+        if (decision.bitrateChanged && decision.targetBitrateMbps != currentBitrate)
         {
-            currentBitrateMbps_.store(newBitrate);
+            currentBitrateMbps_.store(decision.targetBitrateMbps);
             std::lock_guard<std::mutex> lock(encoderMutex_);
             if (encoder_ != nullptr)
             {
-                encoder_->SetBitrate(newBitrate);
+                encoder_->SetBitrate(decision.targetBitrateMbps);
             }
         }
     }
@@ -1285,11 +1623,15 @@ void StreamingServer::HandleLatencyReport(const oxr::protocol::LatencyReport& re
     auto now = Clock::now();
     if (now - lastLogTime >= std::chrono::seconds(1))
     {
-        spdlog::info("StreamingServer: client latency receive->submit={:.2f}ms decode={:.2f}ms compositor={:.2f}ms total={:.2f}ms horizon={:.2f}ms bitrate={}Mbps",
+        spdlog::info("StreamingServer: client latency receive->submit={:.2f}ms decode={:.2f}ms compositor={:.2f}ms total={:.2f}ms displayedAge={:.2f}ms reproj={} stale={} poseFallbacks={} horizon={:.2f}ms bitrate={}Mbps",
                       report.receiveToDecoderSubmitMs,
                       report.decodeLatencyMs,
                       report.compositorLatencyMs,
                       report.totalClientLatencyMs,
+                      report.displayedFrameAgeMs,
+                      report.reprojectedFrames,
+                      report.staleFrameReuses,
+                      report.renderPoseFallbacks,
                       trackingReceiver_ ? trackingReceiver_->GetPredictionHorizonMs() : 0.0f,
                       currentBitrateMbps_.load());
         lastLogTime = now;
@@ -1299,6 +1641,7 @@ void StreamingServer::HandleLatencyReport(const oxr::protocol::LatencyReport& re
 void StreamingServer::HandleKeyframeRequest(const oxr::protocol::RequestKeyframe& request)
 {
     requestKeyframeCount_.fetch_add(1);
+    requestKeyframeTotalForAbr_.fetch_add(1);
 
     std::lock_guard<std::mutex> lock(encoderMutex_);
     if (encoder_ != nullptr)
@@ -1319,9 +1662,11 @@ void StreamingServer::HandleControlPayload(const uint8_t* data, size_t size)
 
     uint8_t type = data[0];
     if (type == static_cast<uint8_t>(oxr::protocol::ControlType::LatencyReport) &&
-        size >= sizeof(oxr::protocol::LatencyReport))
+        size >= oxr::protocol::LATENCY_REPORT_BASE_SIZE)
     {
-        HandleLatencyReport(*reinterpret_cast<const oxr::protocol::LatencyReport*>(data));
+        oxr::protocol::LatencyReport report = {};
+        memcpy(&report, data, std::min(size, sizeof(report)));
+        HandleLatencyReport(report);
     }
     else if (type == static_cast<uint8_t>(oxr::protocol::ControlType::RequestKeyframe) &&
              size >= sizeof(oxr::protocol::RequestKeyframe))
@@ -1331,7 +1676,7 @@ void StreamingServer::HandleControlPayload(const uint8_t* data, size_t size)
     else if (type == static_cast<uint8_t>(oxr::protocol::ControlType::NackRequest) &&
              size >= sizeof(oxr::protocol::NackRequest))
     {
-        if (!clientUsesUsbAdb_)
+        if (!clientUsesUsbAdb_.load())
         {
             HandleNackRequest(*reinterpret_cast<const oxr::protocol::NackRequest*>(data));
         }
@@ -1350,12 +1695,10 @@ void StreamingServer::UpdatePredictionHorizon()
     trackingReceiver_->SetPredictionHorizonMs(horizonMs);
 }
 
-void StreamingServer::SendFrame(void* leftTexture, void* rightTexture)
+void StreamingServer::SendFrame(FrameSource frameSource)
 {
-    if (leftTexture == nullptr || rightTexture == nullptr || state_.load() != State::Connected)
+    if (!frameSource.IsStereoValid() || state_.load() != State::Connected)
     {
-        Swapchain::ReleaseTextureSlice(leftTexture);
-        Swapchain::ReleaseTextureSlice(rightTexture);
         return;
     }
 
@@ -1363,15 +1706,12 @@ void StreamingServer::SendFrame(void* leftTexture, void* rightTexture)
         std::lock_guard<std::mutex> encoderLock(encoderMutex_);
         if (encoder_ == nullptr || !encoder_->IsInitialized())
         {
-            Swapchain::ReleaseTextureSlice(leftTexture);
-            Swapchain::ReleaseTextureSlice(rightTexture);
             return;
         }
     }
 
     StreamingFrame frame = {};
-    frame.source.leftTexture = leftTexture;
-    frame.source.rightTexture = rightTexture;
+    frame.source = std::move(frameSource);
     frame.frameIndex = frameIndex_++;
     frame.timestampNs = SteadyClockNowNs();
     frame.valid = true;
@@ -1389,7 +1729,7 @@ void StreamingServer::SendFrame(void* leftTexture, void* rightTexture)
         }
     }
 
-    if (frameQueue_.PushLatest(frame))
+    if (frameQueue_.PushLatest(std::move(frame)))
     {
         replacedFrameCount_.fetch_add(1);
     }
@@ -1402,9 +1742,190 @@ void StreamingServer::ReleaseStreamingFrame(StreamingFrame& frame)
         return;
     }
 
-    Swapchain::ReleaseTextureSlice(frame.source.leftTexture);
-    Swapchain::ReleaseTextureSlice(frame.source.rightTexture);
     frame = {};
+}
+
+void StreamingServer::QueueEncodedVideoFrame(EncodedVideoFrame frame)
+{
+    if (frame.nals.empty())
+    {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(videoSendMutex_);
+        while (videoSendQueue_.size() >= MaxVideoSendQueueFrames)
+        {
+            auto droppable = std::find_if(
+                videoSendQueue_.begin(),
+                videoSendQueue_.end(),
+                [](const EncodedVideoFrame& queuedFrame) {
+                    return std::none_of(
+                        queuedFrame.nals.begin(),
+                        queuedFrame.nals.end(),
+                        [](const EncodedNalUnit& nal) { return nal.isKeyframe; });
+                });
+            if (droppable != videoSendQueue_.end())
+            {
+                videoSendQueue_.erase(droppable);
+            }
+            else
+            {
+                videoSendQueue_.pop_front();
+            }
+            videoSendDroppedFrames_.fetch_add(1);
+            videoSendDroppedFramesTotalForAbr_.fetch_add(1);
+        }
+        videoSendQueue_.push_back(std::move(frame));
+        videoSendQueueDepthMax_.store(std::max(
+            videoSendQueueDepthMax_.load(),
+            static_cast<uint32_t>(videoSendQueue_.size())));
+    }
+    videoSendCv_.notify_one();
+}
+
+void StreamingServer::ClearVideoSendQueue()
+{
+    std::lock_guard<std::mutex> lock(videoSendMutex_);
+    videoSendQueue_.clear();
+}
+
+void StreamingServer::VideoSendThread()
+{
+    while (running_.load())
+    {
+        EncodedVideoFrame frame = {};
+        bool dropStaleFrame = false;
+        {
+            std::unique_lock<std::mutex> lock(videoSendMutex_);
+            videoSendCv_.wait(lock, [this] {
+                return !running_.load() || !videoSendQueue_.empty();
+            });
+            if (!running_.load() && videoSendQueue_.empty())
+            {
+                break;
+            }
+            if (videoSendQueue_.empty())
+            {
+                continue;
+            }
+
+            frame = std::move(videoSendQueue_.front());
+            videoSendQueue_.pop_front();
+
+            const bool newerFrameQueued = !videoSendQueue_.empty();
+            const bool hasKeyframeNal = std::any_of(
+                frame.nals.begin(), frame.nals.end(),
+                [](const EncodedNalUnit& nal) { return nal.isKeyframe; });
+            dropStaleFrame = newerFrameQueued && !hasKeyframeNal;
+        }
+
+        if (dropStaleFrame)
+        {
+            videoSendDroppedFrames_.fetch_add(1);
+            videoSendDroppedFramesTotalForAbr_.fetch_add(1);
+            continue;
+        }
+
+        SendEncodedVideoFrame(frame);
+    }
+
+    ClearVideoSendQueue();
+    spdlog::info("StreamingServer: video send thread ended");
+}
+
+void StreamingServer::SendEncodedVideoFrame(const EncodedVideoFrame& frame)
+{
+    if (frame.hasPose)
+    {
+        SendRenderPosePacket(frame);
+    }
+
+    for (const EncodedNalUnit& nal : frame.nals)
+    {
+        if (nal.tcpPayload.size() <= sizeof(oxr::protocol::TcpVideoNalHeader))
+        {
+            continue;
+        }
+
+        const auto* nalHeader =
+            reinterpret_cast<const oxr::protocol::TcpVideoNalHeader*>(nal.tcpPayload.data());
+        const uint8_t* nalData =
+            nal.tcpPayload.data() + sizeof(oxr::protocol::TcpVideoNalHeader);
+        const size_t nalSize = std::min<size_t>(
+            nalHeader->payloadSize,
+            nal.tcpPayload.size() - sizeof(oxr::protocol::TcpVideoNalHeader));
+        SendNalUnit(packetDispatchState_, frame.frameIndex, nalData, nalSize,
+                    nal.isKeyframe, frame.timestampNs);
+    }
+}
+
+void StreamingServer::SendRenderPosePacket(const EncodedVideoFrame& frame)
+{
+    std::string clientIp;
+    SocketHandle videoSocket = oxrsys::runtime_socket::InvalidSocket;
+    bool videoUsesTcp = false;
+    {
+        std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
+        if (!packetDispatchState_->acceptingPackets)
+        {
+            return;
+        }
+        clientIp = packetDispatchState_->clientIp;
+        videoSocket = packetDispatchState_->videoSocket;
+        videoUsesTcp = packetDispatchState_->videoUsesTcp;
+    }
+
+    if (!oxrsys::runtime_socket::IsValid(videoSocket) || (!videoUsesTcp && clientIp.empty()))
+    {
+        return;
+    }
+
+    if (videoUsesTcp)
+    {
+        oxr::protocol::TcpRenderPose pose = {};
+        pose.frameIndex = frame.frameIndex;
+        pose.presentationTimeNs = frame.timestampNs;
+        memcpy(pose.position, frame.headPosition, sizeof(float) * 3);
+        memcpy(pose.orientation, frame.headOrientation, sizeof(float) * 4);
+
+        std::lock_guard<std::mutex> sendLock(packetDispatchState_->sendMutex);
+        if (!SendTcpRecord(videoSocket, oxr::protocol::TcpRecordType::RenderPose,
+                           &pose, sizeof(pose)))
+        {
+            videoTcpSendFailures_.fetch_add(1);
+            MarkTcpVideoSendFailed(packetDispatchState_, videoSocket);
+        }
+        return;
+    }
+
+    float posePayload[7];
+    memcpy(posePayload, frame.headPosition, sizeof(float) * 3);
+    memcpy(posePayload + 3, frame.headOrientation, sizeof(float) * 4);
+
+    oxr::protocol::VideoPacketHeader poseHeader = {};
+    poseHeader.frameIndex = frame.frameIndex;
+    poseHeader.packetIndex = 0;
+    poseHeader.totalPackets = 0;
+    poseHeader.payloadSize = sizeof(posePayload);
+    poseHeader.flags = oxr::protocol::VIDEO_FLAG_RENDER_POSE;
+    poseHeader.codec = static_cast<uint8_t>(oxr::protocol::VideoCodec::H265);
+    poseHeader.presentationTimeNs = frame.timestampNs;
+
+    uint8_t buf[sizeof(poseHeader) + sizeof(posePayload)];
+    memcpy(buf, &poseHeader, sizeof(poseHeader));
+    memcpy(buf + sizeof(poseHeader), posePayload, sizeof(posePayload));
+
+    sockaddr_in destAddr = {};
+    destAddr.sin_family = AF_INET;
+    destAddr.sin_port = htons(oxr::protocol::VIDEO_PORT);
+    inet_pton(AF_INET, clientIp.c_str(), &destAddr.sin_addr);
+    oxrsys::runtime_socket::SendTo(videoSocket,
+                                   buf,
+                                   sizeof(buf),
+                                   kBestEffortSendFlags,
+                                   (sockaddr*)&destAddr,
+                                   sizeof(destAddr));
 }
 
 void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& dispatchState,
@@ -1442,7 +1963,6 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
             return;
         }
 
-        std::vector<uint8_t> payload(sizeof(oxr::protocol::TcpVideoNalHeader) + size);
         oxr::protocol::TcpVideoNalHeader nalHeader = {};
         nalHeader.presentationTimeNs = timestampNs;
         nalHeader.frameIndex = frameIndex;
@@ -1453,12 +1973,18 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
             nalHeader.flags |= oxr::protocol::VIDEO_FLAG_KEYFRAME;
         }
         nalHeader.codec = static_cast<uint8_t>(oxr::protocol::VideoCodec::H265);
-        memcpy(payload.data(), &nalHeader, sizeof(nalHeader));
-        memcpy(payload.data() + sizeof(nalHeader), data, size);
 
         std::lock_guard<std::mutex> sendLock(dispatchState->sendMutex);
-        SendTcpRecord(videoSocket, oxr::protocol::TcpRecordType::VideoNal,
-                      payload.data(), payload.size());
+        if (!SendTcpRecordParts(videoSocket,
+                                oxr::protocol::TcpRecordType::VideoNal,
+                                &nalHeader,
+                                sizeof(nalHeader),
+                                data,
+                                size))
+        {
+            videoTcpSendFailures_.fetch_add(1);
+            MarkTcpVideoSendFailed(dispatchState, videoSocket);
+        }
         return;
     }
 
@@ -1472,21 +1998,31 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
 
     uint8_t packetBuffer[oxr::protocol::VIDEO_PACKET_SIZE];
 
-    // Prepare cache slot for this frame's packets (for NACK retransmission)
-    CachedFrame* cachedFrame = nullptr;
+    // Prepare cache slot for this frame's packets (for NACK retransmission).
+    size_t cacheIndex = 0;
     {
         std::lock_guard<std::mutex> lock(dispatchState->mutex);
-        size_t idx = dispatchState->cacheWriteIndex % PacketDispatchState::MaxCachedFrames;
-        cachedFrame = &dispatchState->cachedFrames[idx];
-        cachedFrame->frameIndex = frameIndex;
-        cachedFrame->packets.clear();
-        cachedFrame->packets.resize(totalPackets);
+        cacheIndex = dispatchState->cacheWriteIndex % PacketDispatchState::MaxCachedFrames;
+        CachedFrame& cachedFrame = dispatchState->cachedFrames[cacheIndex];
+        cachedFrame.frameIndex = frameIndex;
+        cachedFrame.packetCount = totalPackets;
+        cachedFrame.complete = false;
+        if (cachedFrame.packets.size() < totalPackets)
+        {
+            cachedFrame.packets.resize(totalPackets);
+        }
+        for (size_t i = 0; i < totalPackets; ++i)
+        {
+            cachedFrame.packets[i].size = 0;
+        }
         dispatchState->cacheWriteIndex++;
     }
 
     // Collect per-packet payload pointers and sizes for FEC generation
-    std::vector<const uint8_t*> payloadPtrs(totalPackets);
-    std::vector<uint16_t> payloadSizes(totalPackets);
+    thread_local std::vector<const uint8_t*> payloadPtrs;
+    thread_local std::vector<uint16_t> payloadSizes;
+    payloadPtrs.resize(totalPackets);
+    payloadSizes.resize(totalPackets);
 
     size_t offset = 0;
     for (uint16_t i = 0; i < totalPackets; i++)
@@ -1522,8 +2058,18 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
                                        (sockaddr*)&destAddr,
                                        sizeof(destAddr));
 
-        // Cache for NACK retransmission
-        cachedFrame->packets[i].data.assign(packetBuffer, packetBuffer + packetSize);
+        // Cache for NACK retransmission. The frame is advertised to NACK only
+        // once all packets have been copied.
+        {
+            std::lock_guard<std::mutex> lock(dispatchState->mutex);
+            CachedFrame& cachedFrame = dispatchState->cachedFrames[cacheIndex];
+            if (cachedFrame.frameIndex == frameIndex && i < cachedFrame.packets.size())
+            {
+                CachedPacket& packet = cachedFrame.packets[i];
+                memcpy(packet.data.data(), packetBuffer, packetSize);
+                packet.size = packetSize;
+            }
+        }
 
         offset += payloadSize;
 
@@ -1547,6 +2093,8 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
             fecHeader.totalPackets = totalPackets;
             fecHeader.payloadSize = static_cast<uint16_t>(oxr::protocol::MAX_PACKET_PAYLOAD);
             fecHeader.flags = oxr::protocol::VIDEO_FLAG_FEC | oxr::protocol::VIDEO_FLAG_STEREO;
+            fecHeader.fecGroupLastPacketPayloadSize =
+                payloadSizes[groupStart + groupCount - 1];
             if (isKeyframe)
             {
                 fecHeader.flags |= oxr::protocol::VIDEO_FLAG_KEYFRAME;
@@ -1563,6 +2111,15 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
                 kBestEffortSendFlags,
                 (sockaddr*)&destAddr,
                 sizeof(destAddr));
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(dispatchState->mutex);
+        CachedFrame& cachedFrame = dispatchState->cachedFrames[cacheIndex];
+        if (cachedFrame.frameIndex == frameIndex)
+        {
+            cachedFrame.complete = true;
         }
     }
 }
@@ -1590,56 +2147,146 @@ bool StreamingServer::SendTcpRecord(SocketHandle socket, oxr::protocol::TcpRecor
     return SendAll(socket, payload, payloadSize);
 }
 
-void StreamingServer::HandleNackRequest(const oxr::protocol::NackRequest& request)
+bool StreamingServer::SendTcpRecordParts(SocketHandle socket, oxr::protocol::TcpRecordType type,
+                                         const void* firstPayload, size_t firstPayloadSize,
+                                         const void* secondPayload, size_t secondPayloadSize)
 {
-    std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
-    if (!packetDispatchState_->acceptingPackets || packetDispatchState_->clientIp.empty() ||
-        !oxrsys::runtime_socket::IsValid(packetDispatchState_->videoSocket))
+    const size_t payloadSize = firstPayloadSize + secondPayloadSize;
+    if (!oxrsys::runtime_socket::IsValid(socket) ||
+        payloadSize > oxr::protocol::TCP_MAX_RECORD_PAYLOAD ||
+        (firstPayloadSize > 0 && firstPayload == nullptr) ||
+        (secondPayloadSize > 0 && secondPayload == nullptr))
+    {
+        return false;
+    }
+
+    oxr::protocol::TcpRecordHeader header = {};
+    header.type = type;
+    header.payloadSize = static_cast<uint32_t>(payloadSize);
+    if (!SendAll(socket, &header, sizeof(header)))
+    {
+        return false;
+    }
+    if (firstPayloadSize > 0 && !SendAll(socket, firstPayload, firstPayloadSize))
+    {
+        return false;
+    }
+    if (secondPayloadSize > 0 && !SendAll(socket, secondPayload, secondPayloadSize))
+    {
+        return false;
+    }
+    return true;
+}
+
+void StreamingServer::MarkTcpVideoSendFailed(
+    const std::shared_ptr<PacketDispatchState>& dispatchState,
+    SocketHandle socket)
+{
+    if (!dispatchState || !oxrsys::runtime_socket::IsValid(socket))
     {
         return;
     }
 
-    // Find the cached frame
-    const CachedFrame* cached = nullptr;
-    for (size_t i = 0; i < PacketDispatchState::MaxCachedFrames; i++)
+    bool clearedDispatch = false;
     {
-        if (packetDispatchState_->cachedFrames[i].frameIndex == request.frameIndex &&
-            !packetDispatchState_->cachedFrames[i].packets.empty())
+        std::lock_guard<std::mutex> lock(dispatchState->mutex);
+        if (dispatchState->videoUsesTcp && dispatchState->videoSocket == socket)
         {
-            cached = &packetDispatchState_->cachedFrames[i];
-            break;
+            dispatchState->videoSocket = oxrsys::runtime_socket::InvalidSocket;
+            dispatchState->videoUsesTcp = false;
+            dispatchState->acceptingPackets = false;
+            clearedDispatch = true;
         }
     }
 
-    if (cached == nullptr)
+    if (clearedDispatch)
     {
-        spdlog::debug("StreamingServer: NACK for frame {} but not in cache", request.frameIndex);
+        oxrsys::runtime_socket::Shutdown(socket);
+        spdlog::warn("StreamingServer: USB TCP video send failed; disabled stale video dispatch");
+    }
+}
+
+void StreamingServer::HandleNackRequest(const oxr::protocol::NackRequest& request)
+{
+    struct RetransmitPacket
+    {
+        std::array<uint8_t, oxr::protocol::VIDEO_PACKET_SIZE> data = {};
+        size_t size = 0;
+    };
+
+    std::string clientIp;
+    SocketHandle videoSocket = oxrsys::runtime_socket::InvalidSocket;
+    std::vector<RetransmitPacket> retransmitPackets;
+    retransmitPackets.reserve(static_cast<size_t>(__builtin_popcountll(request.missingBitmask)));
+
+    {
+        std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
+        if (!packetDispatchState_->acceptingPackets || packetDispatchState_->clientIp.empty() ||
+            !oxrsys::runtime_socket::IsValid(packetDispatchState_->videoSocket))
+        {
+            return;
+        }
+
+        const CachedFrame* cached = nullptr;
+        for (size_t i = 0; i < PacketDispatchState::MaxCachedFrames; i++)
+        {
+            if (packetDispatchState_->cachedFrames[i].frameIndex == request.frameIndex &&
+                packetDispatchState_->cachedFrames[i].packetCount == request.totalPackets &&
+                packetDispatchState_->cachedFrames[i].complete &&
+                !packetDispatchState_->cachedFrames[i].packets.empty())
+            {
+                cached = &packetDispatchState_->cachedFrames[i];
+                break;
+            }
+        }
+
+        if (cached == nullptr)
+        {
+            spdlog::debug("StreamingServer: NACK for frame {} but not in cache", request.frameIndex);
+            return;
+        }
+
+        for (uint32_t bit = 0; bit < 64; bit++)
+        {
+            if (!(request.missingBitmask & (1ULL << bit)))
+            {
+                continue;
+            }
+
+            uint32_t pktIdx = request.packetIndexStart + bit;
+            if (pktIdx >= cached->packetCount ||
+                pktIdx >= cached->packets.size() ||
+                cached->packets[pktIdx].size == 0)
+            {
+                continue;
+            }
+
+            RetransmitPacket packet = {};
+            packet.size = cached->packets[pktIdx].size;
+            memcpy(packet.data.data(), cached->packets[pktIdx].data.data(), packet.size);
+            retransmitPackets.push_back(packet);
+        }
+
+        clientIp = packetDispatchState_->clientIp;
+        videoSocket = packetDispatchState_->videoSocket;
+    }
+
+    if (retransmitPackets.empty())
+    {
         return;
     }
 
     sockaddr_in destAddr = {};
     destAddr.sin_family = AF_INET;
     destAddr.sin_port = htons(oxr::protocol::VIDEO_PORT);
-    inet_pton(AF_INET, packetDispatchState_->clientIp.c_str(), &destAddr.sin_addr);
+    inet_pton(AF_INET, clientIp.c_str(), &destAddr.sin_addr);
 
     uint32_t retransmitted = 0;
-    for (uint32_t bit = 0; bit < 64; bit++)
+    for (const RetransmitPacket& packet : retransmitPackets)
     {
-        if (!(request.missingBitmask & (1ULL << bit)))
-        {
-            continue;
-        }
-
-        uint32_t pktIdx = request.packetIndexStart + bit;
-        if (pktIdx >= cached->packets.size() || cached->packets[pktIdx].data.empty())
-        {
-            continue;
-        }
-
-        const auto& pkt = cached->packets[pktIdx];
-        oxrsys::runtime_socket::SendTo(packetDispatchState_->videoSocket,
-                                       pkt.data.data(),
-                                       pkt.data.size(),
+        oxrsys::runtime_socket::SendTo(videoSocket,
+                                       packet.data.data(),
+                                       packet.size,
                                        kBestEffortSendFlags,
                                        (sockaddr*)&destAddr,
                                        sizeof(destAddr));
@@ -1648,6 +2295,7 @@ void StreamingServer::HandleNackRequest(const oxr::protocol::NackRequest& reques
 
     if (retransmitted > 0)
     {
+        videoUdpRetransmittedPackets_.fetch_add(retransmitted);
         spdlog::info("StreamingServer: NACK retransmitted {}/{} packets for frame {}",
                       retransmitted, __builtin_popcountll(request.missingBitmask),
                       request.frameIndex);

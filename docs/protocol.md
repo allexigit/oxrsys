@@ -18,6 +18,7 @@ The WiFi transport uses UDP with dedicated ports:
 - Video: `9944`
 - Tracking: `9945`
 - Control: `9946`
+- Audio: `9947` (reserved for headset speaker audio; not advertised until an audio stream is active)
 
 Discovery announces the server and its stream settings. Video carries encoded frame fragments. Tracking carries headset and controller state back to the runtime. Control carries latency reports, keyframe requests, and haptics.
 
@@ -38,6 +39,7 @@ TCP payloads are framed with `TcpRecordHeader`, which contains the record magic,
 - `Tracking`
 - `Control`
 - `Disconnect`
+- `Audio`
 
 ## Discovery
 
@@ -52,6 +54,51 @@ The handshake exposes:
 - server and device names; Android clients send the OpenXR `systemName` in
   `ClientConnect.deviceName`
 - preferred codec and bitrate limits
+- server feature flags for foveated encoding, client foveation override, client upscaling, and headset audio
+- client capability flags for foveated encoding, client foveation, client upscaling, and audio output
+- foveated encoding preset and aligned AADT parameters
+- client foveation override preset and client upscaling mode
+- client reprojection mode
+- audio port and sample rate fields reserved for headset speaker audio
+
+`ServerAnnounce` is versioned as a 92-byte v1.0 base followed by v1.1 trailing fields. `ClientConnect`
+is versioned as an 80-byte v1.0 base followed by v1.1 trailing fields. Receivers accept either the
+base size or the full struct size and zero-initialize missing trailing fields.
+
+`ServerAnnounce.clientReprojectionMode` lets the runtime choose the Quest/PICO fallback behavior when
+no newly decoded video frame is ready:
+
+- `Off`: display only the available video path without stale-frame pose reprojection.
+- `Pose`: reuse the last decoded texture for short gaps and submit the layer using the matched
+  render pose when it is available.
+- `PoseWarp`: allow the client to add a conservative GLES image-space orientation correction on top
+  of `Pose`; clients must disable it on stale frames that are too old, missing pose data, large
+  translation, recovery conditions, or repeated reuse.
+
+`ClientConnect.maxBitrateMbps` is a client-side ceiling. A value of `0`
+(`CLIENT_MAX_BITRATE_USE_SERVER_CONFIG`) means the client does not impose a
+bitrate cap, so the runtime uses `streaming.bitrate_mbps` from its config. The
+runtime accepts configured bitrates from `1` to `200` Mbps.
+
+The runtime announces the configured preferred headset refresh rate. Current Home-supported values
+are `60`, `72`, `80`, `90`, and `120` Hz. Quest clients request the announced value through
+`XR_FB_display_refresh_rate` when available and report the active rate back in
+`ClientConnect.refreshRateHz`; the runtime uses that reported value for encode cadence and pose
+prediction.
+
+Foveated encoding uses an ALVR-style axis-aligned distortion transform before video encode on
+supported server paths. The announced presets currently map to:
+
+- `Light`: center `0.60 x 0.55`, edge ratio `2 x 3`
+- `Medium`: center `0.45 x 0.40`, edge ratio `4 x 5`
+- `High`: center `0.35 x 0.32`, edge ratio `6 x 7`
+
+The server aligns the active foveated area to encoder-friendly dimensions and announces the encoded
+resolution. A client must advertise `CLIENT_CAPABILITY_FOVEATED_ENCODING` before the server applies
+the AADT compression shader. Clients that do not advertise the capability can still receive the
+reduced encoded resolution as a normal downscaled stream. Until the protocol carries a separate
+foveated target size, the server enables AADT only when the shader target can match the announced
+source dimensions coherently; otherwise it announces a normal stream.
 
 ## Video Stream
 
@@ -62,6 +109,7 @@ UDP video packets use `VideoPacketHeader` followed by up to `1400` bytes of payl
 - payload size
 - flags
 - codec
+- FEC group final-packet payload size, only meaningful on `VIDEO_FLAG_FEC` packets
 - presentation timestamp
 
 Current codec identifiers:
@@ -72,11 +120,14 @@ Current codec identifiers:
 
 USB TCP video sends complete encoded NAL units as `VideoNal` records. It does not use UDP fragmentation, FEC, or NACK recovery.
 
-The runtime currently targets low-latency headset streaming. The queue is latest-frame-only rather than fully reliable.
+The runtime currently targets low-latency headset streaming. Frame submission and encoded-video
+dispatch are bounded and latest-frame-oriented rather than fully reliable; if the transport cannot
+keep up, stale encoded frames may be dropped so socket backpressure does not block the encoder
+callback or `Session::EndFrame()`.
 
 The current stream also includes two recovery and timing helpers:
 
-- `VIDEO_FLAG_FEC` marks XOR parity packets. One parity packet is sent per `FEC_GROUP_SIZE` data packets and can recover one lost data packet in that group.
+- `VIDEO_FLAG_FEC` marks XOR parity packets. One parity packet is sent per `FEC_GROUP_SIZE` data packets and can recover one lost data packet in that group. FEC packets also carry the payload size of that group's last data packet in the existing 24-byte header padding. Receivers use that size only when the recovered packet is the last packet of the group; other recovered packets remain `MAX_PACKET_PAYLOAD`.
 - `VIDEO_FLAG_RENDER_POSE` marks metadata packets that carry the server render pose for a frame. These packets are not video data. Headset clients must match them to the decoded frame by presentation timestamp before submitting projection layers so compositor reprojection uses the pose that rendered that exact frame.
 
 ## Tracking Stream
@@ -106,9 +157,30 @@ The control channel currently defines the following payloads over UDP or TCP `Co
 - `HapticsCommand`
 - `NackRequest`
 
-Latency reports allow the runtime to keep prediction bounded. Keyframe requests let the client recover after packet loss or decode stalls. Haptics are sent from the runtime to the client.
+Latency reports allow the runtime to keep prediction bounded. The first 20 bytes are the historical
+base report: receive-to-submit, decode, compositor, and total client latency. Newer clients append
+displayed frame age, reprojected-frame count, stale-frame reuse count, render-pose fallback count,
+and the active client reprojection mode. The runtime accepts the base report size for older clients
+and treats missing trailing metrics as zero.
+
+The runtime ABR controller consumes the latency report, displayed frame age, keyframe request
+deltas, video-send drops, encoder drops, and reprojection pressure. `streaming.abr_mode = "bitrate"`
+adjusts encoder bitrate only. `full` currently selects named quality profiles in status and is the
+entry point for session-safe resolution/foveation/upscaling changes once profile transitions are
+validated. ABR lowers quickly on loss or high frame age and recovers slowly after stable windows to
+avoid oscillation.
+
+Keyframe requests let the client recover after packet loss or decode stalls. Haptics are sent from
+the runtime to the client.
 
 `NackRequest` lets a UDP client ask the runtime to retransmit specific recently sent video packets. It is a short-window recovery mechanism, not a guarantee of full stream reliability. USB TCP clients do not send NACKs.
+
+## Audio Stream
+
+The protocol reserves stereo 48 kHz float PCM speaker audio over UDP `AUDIO_PORT` or TCP `Audio`
+records. The wire structs are present so clients and frontends can parse the protocol safely, but the
+runtime does not advertise `SERVER_FEATURE_HEADSET_AUDIO` until a real capture/playback path is
+attached. Microphone input is out of scope for this speaker-only path.
 
 ## Session Lifecycle
 

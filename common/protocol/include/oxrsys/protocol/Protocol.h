@@ -16,7 +16,14 @@ constexpr uint16_t DISCOVERY_PORT = 9943;
 constexpr uint16_t VIDEO_PORT = 9944;
 constexpr uint16_t TRACKING_PORT = 9945;
 constexpr uint16_t CONTROL_PORT = 9946;
+constexpr uint16_t AUDIO_PORT = 9947;
 constexpr uint32_t HAND_JOINT_COUNT = 26;
+constexpr uint32_t STREAMING_MIN_BITRATE_MBPS = 1;
+constexpr uint32_t STREAMING_MAX_BITRATE_MBPS = 200;
+constexpr uint32_t CLIENT_MAX_BITRATE_USE_SERVER_CONFIG = 0;
+constexpr uint32_t SERVER_ANNOUNCE_BASE_SIZE = 92;
+constexpr uint32_t CLIENT_CONNECT_BASE_SIZE = 80;
+constexpr uint32_t LATENCY_REPORT_BASE_SIZE = 20;
 
 enum class StreamingTransport : uint8_t
 {
@@ -40,6 +47,7 @@ enum class TcpRecordType : uint16_t
     Tracking = 0x0005,
     Control = 0x0006,
     Disconnect = 0x0007,
+    Audio = 0x0008,
 };
 
 struct TcpRecordHeader
@@ -71,6 +79,16 @@ struct TcpRenderPose
     uint32_t reserved2 = 0;
 };
 
+struct TcpAudioHeader
+{
+    int64_t presentationTimeNs = 0;
+    uint32_t frameCount = 0;
+    uint32_t payloadSize = 0;
+    uint32_t sampleRateHz = 48000;
+    uint16_t channels = 2;
+    uint16_t format = 1; // AudioSampleFormat::Float32
+};
+
 // ─── Discovery (UDP broadcast on DISCOVERY_PORT) ────────────────────────────
 
 enum class MessageType : uint8_t
@@ -78,6 +96,56 @@ enum class MessageType : uint8_t
     ServerAnnounce = 0x01,
     ClientConnect = 0x02,
     ServerDisconnect = 0x03,
+};
+
+enum ServerFeatureFlags : uint32_t
+{
+    SERVER_FEATURE_FOVEATED_ENCODING = 0x00000001,
+    SERVER_FEATURE_CLIENT_FOVEATION = 0x00000002, // clientFoveationPreset is an explicit override
+    SERVER_FEATURE_CLIENT_UPSCALING = 0x00000004,
+    SERVER_FEATURE_HEADSET_AUDIO = 0x00000008,
+};
+
+enum ClientCapabilityFlags : uint32_t
+{
+    CLIENT_CAPABILITY_FOVEATED_ENCODING = 0x00000001,
+    CLIENT_CAPABILITY_CLIENT_FOVEATION = 0x00000002,
+    CLIENT_CAPABILITY_CLIENT_UPSCALING = 0x00000004,
+    CLIENT_CAPABILITY_AUDIO_OUTPUT = 0x00000008,
+};
+
+enum class FoveationPreset : uint32_t
+{
+    Off = 0,
+    Light = 1,
+    Medium = 2,
+    High = 3,
+};
+
+enum class ClientFoveationPreset : uint32_t
+{
+    Off = 0,
+    Light = 1,
+    Medium = 2,
+    High = 3,
+};
+
+enum class ClientUpscalingMode : uint32_t
+{
+    Off = 0,
+    SnapdragonGsr = 1,
+};
+
+enum class ClientReprojectionMode : uint32_t
+{
+    Off = 0,
+    Pose = 1,
+    PoseWarp = 2,
+};
+
+enum class AudioSampleFormat : uint16_t
+{
+    Float32 = 1,
 };
 
 struct ServerAnnounce
@@ -94,6 +162,22 @@ struct ServerAnnounce
     uint32_t encodedWidth;     // Actual H.265 encoded width (may be < renderWidth if scaled)
     uint32_t encodedHeight;    // Actual H.265 encoded height (may be < renderHeight if scaled)
     char serverName[64];       // Null-terminated UTF-8
+
+    // Protocol v1.1 trailing fields. The first 92 bytes are the stable v1.0
+    // prefix so older clients can still receive and parse a truncated announce.
+    uint32_t serverFeatures = 0;        // ServerFeatureFlags
+    uint32_t audioPort = AUDIO_PORT;
+    FoveationPreset foveatedEncodingPreset = FoveationPreset::Off;
+    ClientFoveationPreset clientFoveationPreset = ClientFoveationPreset::Off;
+    ClientUpscalingMode clientUpscalingMode = ClientUpscalingMode::Off;
+    ClientReprojectionMode clientReprojectionMode = ClientReprojectionMode::Pose;
+    uint32_t audioSampleRateHz = 48000;
+    float foveationCenterSizeX = 0.0f;
+    float foveationCenterSizeY = 0.0f;
+    float foveationCenterShiftX = 0.0f;
+    float foveationCenterShiftY = 0.0f;
+    float foveationEdgeRatioX = 1.0f;
+    float foveationEdgeRatioY = 1.0f;
 };
 
 struct ClientConnect
@@ -106,6 +190,13 @@ struct ClientConnect
     uint32_t maxBitrateMbps;
     uint32_t refreshRateHz;    // Actual client display refresh rate
     char deviceName[64];       // e.g. "Quest 3", "Pico 4"
+
+    // Protocol v1.1 trailing fields. The first 80 bytes are the stable v1.0
+    // prefix so older servers can still parse the original connect message.
+    uint32_t clientCapabilities = 0; // ClientCapabilityFlags
+    uint32_t audioSampleRateHz = 48000;
+    uint32_t reserved2 = 0;
+    uint32_t reserved3 = 0;
 };
 
 // ─── Video Stream (Server → Client, UDP on VIDEO_PORT) ──────────────────────
@@ -125,6 +216,8 @@ struct VideoPacketHeader
     uint16_t payloadSize;
     uint8_t flags;             // See VideoFlags
     uint8_t codec;             // VideoCodec cast to u8
+    uint16_t fecGroupLastPacketPayloadSize; // FEC packets: payload size of this group's last data packet
+    uint16_t reserved = 0;
     int64_t presentationTimeNs; // Server-side timestamp
 };
 
@@ -137,6 +230,18 @@ enum VideoFlags : uint8_t
     VIDEO_FLAG_STEREO = 0x0C,  // Both eyes in one frame
     VIDEO_FLAG_FEC = 0x10,     // Forward Error Correction parity packet
     VIDEO_FLAG_RENDER_POSE = 0x20, // Payload contains the server's render pose for this frame
+};
+
+struct AudioPacketHeader
+{
+    int64_t presentationTimeNs = 0;
+    uint32_t frameIndex = 0;
+    uint32_t frameCount = 0;
+    uint32_t payloadSize = 0;
+    uint32_t sampleRateHz = 48000;
+    uint16_t channels = 2;
+    uint16_t format = static_cast<uint16_t>(AudioSampleFormat::Float32);
+    uint32_t reserved = 0;
 };
 
 // FEC: 1 parity packet per group of N data packets (XOR-based recovery).
@@ -234,6 +339,11 @@ struct LatencyReport
     float decodeLatencyMs;
     float compositorLatencyMs;
     float totalClientLatencyMs;
+    float displayedFrameAgeMs = 0.0f;
+    uint32_t reprojectedFrames = 0;
+    uint32_t staleFrameReuses = 0;
+    uint32_t renderPoseFallbacks = 0;
+    ClientReprojectionMode reprojectionMode = ClientReprojectionMode::Off;
 };
 
 enum KeyframeReasonFlags : uint32_t

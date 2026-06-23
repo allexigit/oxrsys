@@ -4,6 +4,8 @@
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <android/log.h>
+#include <array>
+#include <algorithm>
 #include <arpa/inet.h>
 #include <chrono>
 #include <cstring>
@@ -138,18 +140,19 @@ void NetworkReceiver::DiscoveryThread(OnServerFoundCallback callback)
         socklen_t addrLen = sizeof(senderAddr);
         ssize_t received = recvfrom(discoverySocket_, buffer, sizeof(buffer), 0,
                                      (sockaddr*)&senderAddr, &addrLen);
-        if (received >= (ssize_t)sizeof(protocol::ServerAnnounce))
+        if (received >= (ssize_t)protocol::SERVER_ANNOUNCE_BASE_SIZE)
         {
-            auto* hello = reinterpret_cast<protocol::ServerAnnounce*>(buffer);
-            if (hello->type == protocol::MessageType::ServerAnnounce)
+            protocol::ServerAnnounce hello = {};
+            memcpy(&hello, buffer, std::min<size_t>(static_cast<size_t>(received), sizeof(hello)));
+            if (hello.type == protocol::MessageType::ServerAnnounce)
             {
                 char ipStr[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &senderAddr.sin_addr, ipStr, sizeof(ipStr));
 
                 LOGI("Server found: %s at %s (%ux%u @ %uHz)",
-                     hello->serverName, ipStr, hello->renderWidth,
-                     hello->renderHeight, hello->refreshRateHz);
-                callback(*hello, ipStr);
+                     hello.serverName, ipStr, hello.renderWidth,
+                     hello.renderHeight, hello.refreshRateHz);
+                callback(hello, ipStr);
             }
         }
     }
@@ -237,11 +240,11 @@ void NetworkReceiver::ReceiveThread(OnNalUnitCallback callback)
     uint8_t buffer[protocol::VIDEO_PACKET_SIZE];
     LOGI("Video receive thread started");
 
+    timeval tv = {0, 1000};  // 1ms timeout — low latency packet receive
+    setsockopt(videoSocket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     while (receiving_.load())
     {
-        timeval tv = {0, 1000};  // 1ms timeout — low latency packet receive
-        setsockopt(videoSocket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
         ssize_t received = recv(videoSocket_, buffer, sizeof(buffer), 0);
         if (received < (ssize_t)sizeof(protocol::VideoPacketHeader))
         {
@@ -282,10 +285,10 @@ void NetworkReceiver::ReceiveThread(OnNalUnitCallback callback)
 void NetworkReceiver::ReceiveTcpThread(OnNalUnitCallback callback)
 {
     LOGI("USB TCP video receive thread started");
+    std::vector<uint8_t> payload;
     while (receiving_.load())
     {
         protocol::TcpRecordHeader header = {};
-        std::vector<uint8_t> payload;
         if (!ReadTcpRecord(videoSocket_, header, payload))
         {
             break;
@@ -353,7 +356,9 @@ void NetworkReceiver::ReassembleFrame(const protocol::VideoPacketHeader& header,
                 size_t fecOffset = groupIdx * protocol::MAX_PACKET_PAYLOAD;
                 memcpy(pendingFrame_.fecData.data() + fecOffset, payload,
                        std::min(payloadSize, protocol::MAX_PACKET_PAYLOAD));
-                pendingFrame_.fecReceived[groupIdx] = true;
+                pendingFrame_.fecGroupLastPacketSizes[groupIdx] =
+                    header.fecGroupLastPacketPayloadSize;
+                pendingFrame_.fecReceived[groupIdx] = 1;
 
                 // Try FEC recovery if frame is almost complete
                 if (pendingFrame_.receivedPackets + 1 >= pendingFrame_.totalPackets)
@@ -399,19 +404,23 @@ void NetworkReceiver::ReassembleFrame(const protocol::VideoPacketHeader& header,
         pendingFrame_.totalPackets = header.totalPackets;
         pendingFrame_.receivedPackets = 0;
         pendingFrame_.timestampNs = header.presentationTimeNs;
-        pendingFrame_.data.clear();
-        pendingFrame_.data.resize(header.totalPackets * protocol::MAX_PACKET_PAYLOAD);
-        pendingFrame_.packetReceived.clear();
-        pendingFrame_.packetReceived.resize(header.totalPackets, false);
-        pendingFrame_.packetSizes.clear();
-        pendingFrame_.packetSizes.resize(header.totalPackets, 0);
+        const size_t dataBytes = header.totalPackets * protocol::MAX_PACKET_PAYLOAD;
+        if (pendingFrame_.data.size() < dataBytes)
+        {
+            pendingFrame_.data.resize(dataBytes);
+        }
+        pendingFrame_.packetReceived.assign(header.totalPackets, 0);
+        pendingFrame_.packetSizes.assign(header.totalPackets, 0);
 
         // Initialize FEC tracking
         pendingFrame_.fecGroupCount = fec::GroupCount(header.totalPackets);
-        pendingFrame_.fecReceived.clear();
-        pendingFrame_.fecReceived.resize(pendingFrame_.fecGroupCount, false);
-        pendingFrame_.fecData.clear();
-        pendingFrame_.fecData.resize(pendingFrame_.fecGroupCount * protocol::MAX_PACKET_PAYLOAD, 0);
+        pendingFrame_.fecReceived.assign(pendingFrame_.fecGroupCount, 0);
+        const size_t fecBytes = pendingFrame_.fecGroupCount * protocol::MAX_PACKET_PAYLOAD;
+        if (pendingFrame_.fecData.size() < fecBytes)
+        {
+            pendingFrame_.fecData.resize(fecBytes);
+        }
+        pendingFrame_.fecGroupLastPacketSizes.assign(pendingFrame_.fecGroupCount, 0);
     }
 
     // Store this packet's data
@@ -420,7 +429,7 @@ void NetworkReceiver::ReassembleFrame(const protocol::VideoPacketHeader& header,
     {
         size_t offset = header.packetIndex * protocol::MAX_PACKET_PAYLOAD;
         memcpy(pendingFrame_.data.data() + offset, payload, payloadSize);
-        pendingFrame_.packetReceived[header.packetIndex] = true;
+        pendingFrame_.packetReceived[header.packetIndex] = 1;
         pendingFrame_.packetSizes[header.packetIndex] = static_cast<uint16_t>(payloadSize);
         pendingFrame_.receivedPackets++;
 
@@ -450,15 +459,15 @@ deliver:
                  pendingFrame_.frameIndex, pendingFrame_.totalPackets, totalSize);
         }
 
-        // Compact the data (remove gaps from fixed-size slots)
+        // Compact the data (remove gaps from fixed-size slots) into a reused buffer.
         if (pendingFrame_.totalPackets > 1)
         {
-            std::vector<uint8_t> compacted(totalSize);
+            pendingFrame_.compactedData.resize(totalSize);
             size_t dstOffset = 0;
             for (uint32_t i = 0; i < pendingFrame_.totalPackets; i++)
             {
                 size_t srcOffset = i * protocol::MAX_PACKET_PAYLOAD;
-                memcpy(compacted.data() + dstOffset,
+                memcpy(pendingFrame_.compactedData.data() + dstOffset,
                        pendingFrame_.data.data() + srcOffset,
                        pendingFrame_.packetSizes[i]);
                 dstOffset += pendingFrame_.packetSizes[i];
@@ -466,7 +475,7 @@ deliver:
 
             if (nalCallback_)
             {
-                nalCallback_(compacted.data(), totalSize,
+                nalCallback_(pendingFrame_.compactedData.data(), totalSize,
                              pendingFrame_.timestampNs, receiveTimeNs);
             }
         }
@@ -523,8 +532,8 @@ bool NetworkReceiver::TryFecRecovery()
 
         // Gather present packets for XOR recovery
         uint32_t presentCount = (groupEnd - groupStart) - 1;
-        std::vector<const uint8_t*> presentPtrs(presentCount);
-        std::vector<uint16_t> presentSizes(presentCount);
+        std::array<const uint8_t*, protocol::FEC_GROUP_SIZE> presentPtrs = {};
+        std::array<uint16_t, protocol::FEC_GROUP_SIZE> presentSizes = {};
         uint32_t p = 0;
         for (uint32_t i = groupStart; i < groupEnd; i++)
         {
@@ -540,20 +549,17 @@ bool NetworkReceiver::TryFecRecovery()
         uint8_t* recoveredSlot = pendingFrame_.data.data() + missingIdx * protocol::MAX_PACKET_PAYLOAD;
         fec::Decode(presentPtrs.data(), presentSizes.data(), presentCount, fecPayload, recoveredSlot);
 
-        // For the recovered packet, we don't know the exact size — use MAX_PACKET_PAYLOAD
-        // unless it's the last packet (which is typically smaller). For non-last packets,
-        // MAX_PACKET_PAYLOAD is correct since the server pads to full size.
         uint16_t recoveredSize = static_cast<uint16_t>(protocol::MAX_PACKET_PAYLOAD);
-        if (missingIdx == totalPackets - 1 && totalPackets > 1)
+        if (missingIdx == groupEnd - 1)
         {
-            // Last packet might be smaller — we can't know the exact size from FEC alone.
-            // Use MAX_PACKET_PAYLOAD; the compaction step handles variable-sized last packets.
-            // This may include some trailing zeros, but H.265 decoders tolerate this (RBSP
-            // trailing zeros are valid).
-            recoveredSize = static_cast<uint16_t>(protocol::MAX_PACKET_PAYLOAD);
+            const uint16_t groupLastPacketSize = pendingFrame_.fecGroupLastPacketSizes[g];
+            if (groupLastPacketSize > 0 && groupLastPacketSize <= protocol::MAX_PACKET_PAYLOAD)
+            {
+                recoveredSize = groupLastPacketSize;
+            }
         }
 
-        pendingFrame_.packetReceived[missingIdx] = true;
+        pendingFrame_.packetReceived[missingIdx] = 1;
         pendingFrame_.packetSizes[missingIdx] = recoveredSize;
         pendingFrame_.receivedPackets++;
         recovered = true;

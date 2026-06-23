@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <EGL/egl.h>
@@ -10,11 +11,13 @@
 #include <GLES2/gl2ext.h>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <openxr/openxr.h>
 
 #include "NetworkReceiver.h"
+#include "QuestShellInteraction.h"
 #include "TrackingSender.h"
 #include "VideoDecoder.h"
 
@@ -69,9 +72,12 @@ private:
     bool CreateSession();
     bool CreateSwapchains();
     bool InitializeHandTracking();
+    bool InitializePassthrough();
     bool InitializeFoveation();
-    bool InitializeDisplayRefreshRate();
+    bool InitializeDisplayRefreshRate(float preferredRefreshRateHz);
+    void ApplyClientFoveationPreset(protocol::ClientFoveationPreset preset);
     void ShutdownFoveation();
+    void ShutdownPassthrough();
     void ShutdownHandTracking();
     void HandleSessionStateChange(XrSessionState newState);
 
@@ -101,12 +107,27 @@ private:
     void OnNalUnitReceived(const uint8_t* data, size_t size,
                            int64_t timestampNs, int64_t receiveTimeNs);
 
-    void RenderFrame(XrTime predictedDisplayTime);
+    bool RenderFrame(XrTime predictedDisplayTime);
     void BlitVideoToSwapchain(int eye);
+    bool CreateShellResources();
+    void DestroyShellResources();
+    void ReleaseShellForStream();
+    void RenderShellToSwapchain(int eye, bool transparentBackground);
     void ClearSwapchain(int eye, float r, float g, float b);
     XrPosef BuildEyePoseFromRenderPose(const NetworkReceiver::RenderPose& renderPose,
                                        int eye) const;
-    void SendTracking(XrTime predictedDisplayTime);
+    XrPosef BuildCurrentHeadPose() const;
+    bool ResolveRenderPoseForFrame(int64_t presentationTimeUs,
+                                   NetworkReceiver::RenderPose* renderPose,
+                                   bool* usedFallback);
+    void UpdateReprojectionWarp(bool reusingFrame);
+    protocol::TrackingPacket BuildTrackingPacket(XrTime predictedDisplayTime);
+    void SendTracking(const protocol::TrackingPacket& packet);
+    void UpdateShellPose();
+    void UpdateShellInteractions();
+    bool SetShellPassthroughActive(bool active);
+    bool CanUseShellPassthrough() const;
+    const char* ShellStatusText() const;
 
     bool SetupActions();
 
@@ -123,6 +144,8 @@ private:
     PFN_xrLocateHandJointsEXT xrLocateHandJointsEXT_ = nullptr;
     XrHandTrackerEXT handTrackers_[2] = {};
     bool foveationAvailable_ = false;
+    bool passthroughExtensionAvailable_ = false;
+    bool passthroughSupported_ = false;
     bool foveationConfigurationAvailable_ = false;
     bool swapchainUpdateAvailable_ = false;
     bool displayRefreshRateAvailable_ = false;
@@ -133,10 +156,24 @@ private:
     PFN_xrGetDisplayRefreshRateFB xrGetDisplayRefreshRateFB_ = nullptr;
     PFN_xrRequestDisplayRefreshRateFB xrRequestDisplayRefreshRateFB_ = nullptr;
     XrFoveationProfileFB foveationProfile_ = XR_NULL_HANDLE;
+    PFN_xrCreatePassthroughFB xrCreatePassthroughFB_ = nullptr;
+    PFN_xrDestroyPassthroughFB xrDestroyPassthroughFB_ = nullptr;
+    PFN_xrPassthroughStartFB xrPassthroughStartFB_ = nullptr;
+    PFN_xrPassthroughPauseFB xrPassthroughPauseFB_ = nullptr;
+    PFN_xrCreatePassthroughLayerFB xrCreatePassthroughLayerFB_ = nullptr;
+    PFN_xrDestroyPassthroughLayerFB xrDestroyPassthroughLayerFB_ = nullptr;
+    PFN_xrPassthroughLayerResumeFB xrPassthroughLayerResumeFB_ = nullptr;
+    PFN_xrPassthroughLayerPauseFB xrPassthroughLayerPauseFB_ = nullptr;
+    PFN_xrPassthroughLayerSetStyleFB xrPassthroughLayerSetStyleFB_ = nullptr;
+    XrPassthroughFB passthrough_ = XR_NULL_HANDLE;
+    XrPassthroughLayerFB passthroughLayer_ = XR_NULL_HANDLE;
+    bool passthroughRunning_ = false;
+    bool passthroughLayerRunning_ = false;
 
     // Controller actions
     XrActionSet actionSet_ = XR_NULL_HANDLE;
     XrAction gripPoseAction_ = XR_NULL_HANDLE;
+    XrAction aimPoseAction_ = XR_NULL_HANDLE;
     XrAction triggerAction_ = XR_NULL_HANDLE;
     XrAction gripAction_ = XR_NULL_HANDLE;
     XrAction thumbstickAction_ = XR_NULL_HANDLE;
@@ -144,6 +181,7 @@ private:
     XrAction bButtonAction_ = XR_NULL_HANDLE;
     XrAction menuAction_ = XR_NULL_HANDLE;
     XrSpace gripSpaces_[2] = {};     // [0]=left, [1]=right
+    XrSpace aimSpaces_[2] = {};      // [0]=left, [1]=right
     XrPath handPaths_[2] = {};       // /user/hand/left, /user/hand/right
 
     XrSwapchain swapchains_[2] = {};
@@ -175,7 +213,25 @@ private:
     GLuint blitProgram_ = 0;
     GLuint blitVao_ = 0;
     GLuint blitVbo_ = 0;
+    GLuint shellProgram_ = 0;
+    GLuint shellVao_ = 0;
+    GLuint shellVbo_ = 0;
     GLuint fbo_ = 0;               // Framebuffer for blit-to-swapchain
+    GLint blitTextureUniform_ = -1;
+    GLint blitEyeSourceMinUniform_ = -1;
+    GLint blitEyeSourceMaxUniform_ = -1;
+    GLint blitLogicalTexelSizeUniform_ = -1;
+    GLint blitFoveatedEncodingEnabledUniform_ = -1;
+    GLint blitClientUpscalingEnabledUniform_ = -1;
+    GLint blitUpscaleEdgeThresholdUniform_ = -1;
+    GLint blitUpscaleSharpnessUniform_ = -1;
+    GLint blitFoveationCenterSizeUniform_ = -1;
+    GLint blitFoveationCenterShiftUniform_ = -1;
+    GLint blitFoveationEdgeRatioUniform_ = -1;
+    GLint blitFoveationEyeSizeRatioUniform_ = -1;
+    GLint blitReprojectionWarpEnabledUniform_ = -1;
+    GLint blitReprojectionWarpOffsetUniform_ = -1;
+    GLint shellMvpUniform_ = -1;
 
     // Networking
     std::unique_ptr<NetworkReceiver> networkReceiver_;
@@ -187,12 +243,14 @@ private:
 
     std::atomic<ConnectionState> connectionState_{ConnectionState::Disconnected};
     std::atomic<bool> needsReconnect_{false};
+    std::atomic<bool> shellPendingNetworkReset_{false};
     std::chrono::steady_clock::time_point lastUsbAdbRetryTime_;
     uint32_t usbAdbRetryAttempts_ = 0;
     char serverIp_[64] = {};
     uint16_t serverVideoPort_ = 0;
     uint16_t serverTrackingPort_ = 0;
     std::chrono::steady_clock::time_point connectionTime_;
+    std::string shellStatusText_ = "Searching for runtime";
 
     // Aspect-ratio-correct blit viewport (computed in OnServerFound)
     uint32_t blitWidth_ = 0;
@@ -211,14 +269,53 @@ private:
     float videoContentVMin_ = 0.0f;
     float videoContentVMax_ = 1.0f;
     uint32_t clientRefreshRateHz_ = 90;
+    protocol::ClientFoveationPreset clientFoveationPreset_ =
+        protocol::ClientFoveationPreset::Off;
+    protocol::ClientReprojectionMode clientReprojectionMode_ =
+        protocol::ClientReprojectionMode::Pose;
+    bool serverFoveatedEncodingEnabled_ = false;
+    bool clientUpscalingEnabled_ = false;
+    float foveationCenterSizeX_ = 1.0f;
+    float foveationCenterSizeY_ = 1.0f;
+    float foveationCenterShiftX_ = 0.0f;
+    float foveationCenterShiftY_ = 0.0f;
+    float foveationEdgeRatioX_ = 1.0f;
+    float foveationEdgeRatioY_ = 1.0f;
+    float foveationEyeWidthRatio_ = 1.0f;
+    float foveationEyeHeightRatio_ = 1.0f;
+    float decodedTexelWidth_ = 1.0f;
+    float decodedTexelHeight_ = 1.0f;
     int64_t predictedDisplayPeriodNs_ = 11111111;
     int64_t lastFrameReceiveTimeNs_ = 0;
     int64_t lastFrameSubmitTimeNs_ = 0;
     int64_t lastFrameAcquireTimeNs_ = 0;
     int64_t lastReportedAcquireTimeNs_ = 0;
     uint32_t skippedDecodedFrames_ = 0;
+    struct PresentedVideoFrame
+    {
+        bool valid = false;
+        GLuint texture = 0;
+        int64_t presentationTimeUs = 0;
+        int64_t localReceiveTimeNs = 0;
+        int64_t localSubmitTimeNs = 0;
+        int64_t localAcquireTimeNs = 0;
+        NetworkReceiver::RenderPose renderPose = {};
+        bool hasRenderPose = false;
+        XrPosef headsetPoseAtPresentation = {
+            {0.0f, 0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 0.0f}
+        };
+        uint32_t consecutiveReuses = 0;
+    };
+    PresentedVideoFrame presentedVideoFrame_;
     NetworkReceiver::RenderPose currentRenderPose_;
     bool hasCurrentRenderPose_ = false;
+    bool reprojectionWarpEnabled_ = false;
+    float reprojectionWarpOffsetX_ = 0.0f;
+    float reprojectionWarpOffsetY_ = 0.0f;
+    uint32_t reprojectedFramesSinceLastReport_ = 0;
+    uint32_t renderPoseFallbacksSinceLastReport_ = 0;
+    uint32_t staleFrameReusesSinceLastReport_ = 0;
     uint32_t renderPoseHitCount_ = 0;
     uint32_t renderPoseMissCount_ = 0;
     std::chrono::steady_clock::time_point lastRenderPoseLogTime_;
@@ -238,6 +335,35 @@ private:
     // Diagnostic counters
     uint32_t nalUnitsReceived_ = 0;
     uint32_t decodedFrameCount_ = 0;
+
+    struct ShellControllerInput
+    {
+        bool active = false;
+        bool aimActive = false;
+        XrPosef gripPose = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        XrPosef aimPose = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+        float triggerValue = 0.0f;
+        quest_shell::Ray ray = {};
+        quest_shell::ControllerClickState clickState = {};
+    };
+    struct ShellHandInput
+    {
+        bool active = false;
+        quest_shell::Vec3 indexTip = {};
+        quest_shell::Ray ray = {};
+        float pinchValue = 0.0f;
+        quest_shell::ControllerClickState pinchClickState = {};
+        std::array<bool, XR_HAND_JOINT_COUNT_EXT> jointActive = {};
+        std::array<quest_shell::Vec3, XR_HAND_JOINT_COUNT_EXT> joints = {};
+    };
+    ShellControllerInput shellControllers_[2];
+    ShellHandInput shellHands_[2];
+    quest_shell::PanelLayout shellPanelLayout_;
+    bool shellPanelInitialized_ = false;
+    bool shellPassthroughMode_ = false;
+    bool appSpaceIsStage_ = false;
+    float shellFloorY_ = 0.0f;
+    quest_shell::ButtonId shellHoveredButton_ = quest_shell::ButtonId::None;
 };
 
 } // namespace oxr

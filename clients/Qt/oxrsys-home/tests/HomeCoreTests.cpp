@@ -10,6 +10,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QSettings>
@@ -67,7 +68,14 @@ void testServerConfigRoundTrip()
         bitrate_mbps = 85
         transport = "usb_adb"
         resolution_scale = 0.50
+        refresh_rate_hz = 120
         encoder_preset = "speed"
+        foveated_encoding_preset = "medium"
+        client_foveation_preset = "high"
+        client_upscaling = true
+        client_reprojection = "pose_warp"
+        abr_mode = "full"
+        headset_audio = true
 
         [logging]
         quest_logcat = yes
@@ -76,12 +84,27 @@ void testServerConfigRoundTrip()
     expect(parsed.bitrateMbps == 85, "Expected bitrate parse");
     expect(parsed.transport == "usb_adb", "Expected transport parse");
     expect(parsed.resolutionScale == 0.50, "Expected resolution parse");
+    expect(parsed.refreshRateHz == 120, "Expected refresh parse");
     expect(parsed.encoderPreset == "speed", "Expected preset parse");
+    expect(parsed.foveatedEncodingPreset == "medium", "Expected FFE parse");
+    expect(parsed.clientFoveationPreset == "high", "Expected client foveation parse");
+    expect(parsed.clientUpscaling, "Expected upscaling parse");
+    expect(parsed.clientReprojection == "pose_warp", "Expected reprojection parse");
+    expect(parsed.abrMode == "full", "Expected ABR parse");
+    expect(parsed.headsetAudio, "Expected audio parse");
     expect(parsed.questLogcat, "Expected quest_logcat parse");
 
     const QString merged = parsed.mergedInto(ServerConfig::defaultText());
     expect(merged.contains("transport = \"usb_adb\""), "Expected transport serialization");
     expect(merged.contains("bitrate_mbps = 85"), "Expected bitrate serialization");
+    expect(merged.contains("refresh_rate_hz = 120"), "Expected refresh serialization");
+    expect(!merged.contains("fov_degrees"), "Expected simulator FOV to stay out of Home config");
+    expect(merged.contains("foveated_encoding_preset = \"medium\""), "Expected FFE serialization");
+    expect(merged.contains("client_foveation_preset = \"high\""), "Expected FFR serialization");
+    expect(merged.contains("client_upscaling = true"), "Expected upscaling serialization");
+    expect(merged.contains("client_reprojection = \"pose_warp\""), "Expected reprojection serialization");
+    expect(merged.contains("abr_mode = \"full\""), "Expected ABR serialization");
+    expect(merged.contains("headset_audio = true"), "Expected audio serialization");
 }
 
 void testHomeModelResetsStreamingConfigToDefaults()
@@ -105,6 +128,8 @@ runtime_enabled = false
 
 [streaming]
 bitrate_mbps = 85
+# Rendering FOV in degrees (symmetric). Must match Quest client's kMacHalfFov.
+fov_degrees = 120
 transport = "usb_adb"
 encoder_preset = "speed"
 
@@ -138,6 +163,17 @@ quest_logcat = true
     const QString text = QString::fromUtf8(file.readAll());
     expect(text.contains("bitrate_mbps = 50"), "Expected default bitrate serialization");
     expect(text.contains("transport = \"auto\""), "Expected default transport serialization");
+    expect(text.contains("refresh_rate_hz = 72"), "Expected default refresh serialization");
+    expect(!text.contains("fov_degrees"), "Expected simulator FOV to stay out of Home config");
+    expect(!text.contains("Rendering FOV"), "Expected legacy simulator FOV comment removal");
+    expect(text.contains("foveated_encoding_preset = \"off\""), "Expected default FFE serialization");
+    expect(text.contains("client_foveation_preset = \"auto\""),
+           "Expected default client foveation serialization");
+    expect(text.contains("client_upscaling = false"), "Expected default upscaling serialization");
+    expect(text.contains("client_reprojection = \"pose\""),
+           "Expected default reprojection serialization");
+    expect(text.contains("abr_mode = \"bitrate\""), "Expected default ABR serialization");
+    expect(text.contains("headset_audio = false"), "Expected default audio serialization");
 
     settings.clear();
 }
@@ -304,6 +340,73 @@ void testCustomAdbPreferencePersistence()
     settings.clear();
 }
 
+void testHomeModelTransportRefreshIsAsyncWithSlowAdb()
+{
+#if !defined(Q_OS_WIN)
+    QTemporaryDir temporaryDir;
+    expect(temporaryDir.isValid(), "Expected temporary directory");
+
+    const QString slowAdbPath = QDir(temporaryDir.path()).filePath("adb");
+    writeFile(slowAdbPath,
+              "#!/bin/sh\n"
+              "sleep 1\n"
+              "if [ \"$1\" = \"version\" ]; then\n"
+              "  echo \"Android Debug Bridge version 1.0.41\"\n"
+              "  exit 0\n"
+              "fi\n"
+              "if [ \"$1\" = \"devices\" ]; then\n"
+              "  echo \"List of devices attached\"\n"
+              "  exit 0\n"
+              "fi\n"
+              "exit 0\n");
+    makeExecutable(slowAdbPath);
+
+    HomePaths paths;
+    paths.configRoot = QDir(temporaryDir.path()).filePath("config");
+    paths.dataRoot = QDir(temporaryDir.path()).filePath("data");
+    paths.stateRoot = QDir(temporaryDir.path()).filePath("state");
+    paths.activeRuntimeDirectory = QDir(temporaryDir.path()).filePath("openxr/1");
+    paths.activeRuntimePath = QDir(paths.activeRuntimeDirectory).filePath("active_runtime.json");
+    paths.configFilePath = QDir(paths.configRoot).filePath("oxrsys-runtime.toml");
+    paths.launcherAppsPath = QDir(paths.configRoot).filePath("launcher_apps.json");
+    paths.runtimeStatusPath = QDir(paths.stateRoot).filePath("runtime_status.json");
+
+    const QString organization = "OXRSysHomeTests";
+    const QString application =
+        "HomeQt-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QSettings settings(organization, application);
+    settings.clear();
+    settings.setValue("customAdbPath", slowAdbPath);
+
+    QElapsedTimer timer;
+    timer.start();
+    HomeModel model(nullptr, organization, application, paths);
+    expect(timer.elapsed() < 250, "Expected HomeModel construction to avoid slow adb blocking");
+
+    timer.restart();
+    model.refreshQuestUsbDevices();
+    expect(timer.elapsed() < 100, "Expected USB refresh to return before slow adb completes");
+
+    settings.clear();
+#endif
+}
+
+void testApplicationLogFilterDropsAppleShortcutNoise()
+{
+    const QString filtered = filteredApplicationLogText(QString::fromUtf8(R"(boot ok
+Unable to get synchronousRemoteObjectProxy, error: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut"
+Error registering app with intents framework: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut"
+Will NOT re-try to establish the connection
+real runtime error
+)"));
+
+    expect(filtered.contains("boot ok"), "Expected ordinary application log line to remain");
+    expect(filtered.contains("real runtime error"), "Expected real application error to remain");
+    expect(!filtered.contains("autoShortcut"), "Expected Apple shortcut service noise to be dropped");
+    expect(!filtered.contains("intents framework"), "Expected App Intents registration noise to be dropped");
+    expect(!filtered.contains("Will NOT re-try"), "Expected retry footer noise to be dropped");
+}
+
 void testRuntimeActivityParsing()
 {
     const RuntimeActivity activity = RuntimeActivity::parse(R"({
@@ -322,16 +425,29 @@ void testRuntimeActivityParsing()
         "render_height": 1920,
         "encoded_width": 2752,
         "encoded_height": 1440,
+        "encoder_preset": "quality",
+        "foveated_encoding_preset": "medium",
+        "client_foveation_preset": "high",
+        "client_upscaling": true,
+        "client_reprojection_mode": "pose_warp",
+        "abr_mode": "full",
+        "abr_state": "constrained",
+        "abr_profile": "smooth",
+        "headset_audio": false,
         "latency_ms": {
           "server_pipeline": 12.5,
           "client_pipeline": 18.25,
-          "prediction_horizon": 30.75
+          "prediction_horizon": 30.75,
+          "displayed_frame_age": 24.5
         },
         "encode_ms": {
           "total_p95": 9.5
         },
         "counters": {
-          "encoder_dropped_frames_total": 2
+          "encoder_dropped_frames_total": 2,
+          "reprojected_frames_delta": 5,
+          "stale_frame_reuses_delta": 6,
+          "render_pose_fallbacks_delta": 2
         }
       }
     })", false);
@@ -341,6 +457,18 @@ void testRuntimeActivityParsing()
     expect(activity.deviceDisplayName() == "Quest", "Expected Quest device display");
     expect(activity.hasStreamingStats, "Expected stats");
     expect(activity.streamingStats.refreshRateHz == 90, "Expected refresh stats");
+    expect(activity.streamingStats.encoderPreset == "quality", "Expected encoder preset stats");
+    expect(activity.streamingStats.foveatedEncodingPreset == "medium", "Expected FFE stats");
+    expect(activity.streamingStats.clientFoveationPreset == "high", "Expected FFR stats");
+    expect(activity.streamingStats.clientUpscaling, "Expected upscaling stats");
+    expect(activity.streamingStats.clientReprojectionMode == "pose_warp",
+           "Expected reprojection stats");
+    expect(activity.streamingStats.abrState == "constrained", "Expected ABR state stats");
+    expect(activity.streamingStats.abrProfile == "smooth", "Expected ABR profile stats");
+    expect(!activity.streamingStats.headsetAudio, "Expected audio stats");
+    expect(activity.streamingStats.displayedFrameAgeMs == 24.5, "Expected frame age stats");
+    expect(activity.streamingStats.reprojectedFramesDelta == 5, "Expected reprojection counter");
+    expect(activity.streamingStats.staleFrameReusesDelta == 6, "Expected stale reuse counter");
     expect(activity.streamingStats.encodeTotalP95Ms == 9.5, "Expected encode stats");
 }
 
@@ -458,6 +586,8 @@ int main(int argc, char** argv)
         testAdbParsing();
         testAdbCustomPathSelection();
         testCustomAdbPreferencePersistence();
+        testHomeModelTransportRefreshIsAsyncWithSlowAdb();
+        testApplicationLogFilterDropsAppleShortcutNoise();
         testRuntimeActivityParsing();
         testDesktopInspection();
         testMacAppInspection();

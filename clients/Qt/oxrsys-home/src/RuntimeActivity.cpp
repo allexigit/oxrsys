@@ -53,6 +53,15 @@ RuntimeStreamingStats RuntimeStreamingStats::parse(const QJsonObject& object)
     stats.renderHeight = intValue(object, "render_height");
     stats.encodedWidth = intValue(object, "encoded_width");
     stats.encodedHeight = intValue(object, "encoded_height");
+    stats.encoderPreset = object.value("encoder_preset").toString();
+    stats.foveatedEncodingPreset = object.value("foveated_encoding_preset").toString();
+    stats.clientFoveationPreset = object.value("client_foveation_preset").toString();
+    stats.clientUpscaling = object.value("client_upscaling").toBool();
+    stats.clientReprojectionMode = object.value("client_reprojection_mode").toString();
+    stats.abrMode = object.value("abr_mode").toString();
+    stats.abrState = object.value("abr_state").toString();
+    stats.abrProfile = object.value("abr_profile").toString();
+    stats.headsetAudio = object.value("headset_audio").toBool();
 
     stats.serverPipelineMs = doubleValue(latency, "server_pipeline");
     stats.clientPipelineMs = doubleValue(latency, "client_pipeline");
@@ -60,6 +69,7 @@ RuntimeStreamingStats RuntimeStreamingStats::parse(const QJsonObject& object)
     stats.clientDecodeMs = doubleValue(latency, "client_decode");
     stats.clientCompositorMs = doubleValue(latency, "client_compositor");
     stats.predictionHorizonMs = doubleValue(latency, "prediction_horizon");
+    stats.displayedFrameAgeMs = doubleValue(latency, "displayed_frame_age");
 
     stats.encodeQueueAverageMs = doubleValue(encode, "queue_avg");
     stats.encodeQueueP95Ms = doubleValue(encode, "queue_p95");
@@ -77,6 +87,9 @@ RuntimeStreamingStats RuntimeStreamingStats::parse(const QJsonObject& object)
     stats.replacedFramesDelta = intValue(counters, "replaced_frames_delta");
     stats.keyframeRequestsDelta = intValue(counters, "keyframe_requests_delta");
     stats.pendingDepthMax = intValue(counters, "pending_depth_max");
+    stats.reprojectedFramesDelta = intValue(counters, "reprojected_frames_delta");
+    stats.staleFrameReusesDelta = intValue(counters, "stale_frame_reuses_delta");
+    stats.renderPoseFallbacksDelta = intValue(counters, "render_pose_fallbacks_delta");
     return stats;
 }
 

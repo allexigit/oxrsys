@@ -32,6 +32,91 @@ enum StreamingTransportSetting: String, CaseIterable, Identifiable {
     }
 }
 
+enum FoveationPresetSetting: String, CaseIterable, Identifiable {
+    case off
+    case light
+    case medium
+    case high
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .off:
+            return "Off"
+        case .light:
+            return "Light"
+        case .medium:
+            return "Medium"
+        case .high:
+            return "High"
+        }
+    }
+}
+
+enum ClientFoveationPresetSetting: String, CaseIterable, Identifiable {
+    case auto
+    case off
+    case light
+    case medium
+    case high
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto:
+            return "Auto"
+        case .off:
+            return "Off"
+        case .light:
+            return "Light"
+        case .medium:
+            return "Medium"
+        case .high:
+            return "High"
+        }
+    }
+}
+
+enum ClientReprojectionSetting: String, CaseIterable, Identifiable {
+    case off
+    case pose
+    case poseWarp = "pose_warp"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .off:
+            return "Off"
+        case .pose:
+            return "Pose"
+        case .poseWarp:
+            return "Pose Warp"
+        }
+    }
+}
+
+enum AbrModeSetting: String, CaseIterable, Identifiable {
+    case off
+    case bitrate
+    case full
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .off:
+            return "Off"
+        case .bitrate:
+            return "Bitrate"
+        case .full:
+            return "Full"
+        }
+    }
+}
+
 struct HomePaths {
     static let appSupportDirectory = NSString(string: "~/Library/Application Support/OXRSys").expandingTildeInPath
     static let configFilePath = (appSupportDirectory as NSString).appendingPathComponent("oxrsys-runtime.toml")
@@ -91,6 +176,7 @@ struct HomeRuntimeStreamingStats: Equatable {
         var clientDecodeMs: Double = 0
         var clientCompositorMs: Double = 0
         var predictionHorizonMs: Double = 0
+        var displayedFrameAgeMs: Double = 0
     }
 
     struct Encode: Equatable {
@@ -112,6 +198,9 @@ struct HomeRuntimeStreamingStats: Equatable {
         var replacedFramesDelta: Int = 0
         var keyframeRequestsDelta: Int = 0
         var pendingDepthMax: Int = 0
+        var reprojectedFramesDelta: Int = 0
+        var staleFrameReusesDelta: Int = 0
+        var renderPoseFallbacksDelta: Int = 0
     }
 
     var sampleUnixMilliseconds: Int64 = 0
@@ -122,6 +211,15 @@ struct HomeRuntimeStreamingStats: Equatable {
     var renderHeight: Int = 0
     var encodedWidth: Int = 0
     var encodedHeight: Int = 0
+    var encoderPreset: String = ""
+    var foveatedEncodingPreset: String = ""
+    var clientFoveationPreset: String = ""
+    var clientUpscaling = false
+    var clientReprojectionMode: String = ""
+    var abrMode: String = ""
+    var abrState: String = ""
+    var abrProfile: String = ""
+    var headsetAudio = false
     var latency = Latency()
     var encode = Encode()
     var counters = Counters()
@@ -144,13 +242,23 @@ struct HomeRuntimeStreamingStats: Equatable {
             renderHeight: intValue(object["render_height"]) ?? 0,
             encodedWidth: intValue(object["encoded_width"]) ?? 0,
             encodedHeight: intValue(object["encoded_height"]) ?? 0,
+            encoderPreset: stringValue(object["encoder_preset"]) ?? "",
+            foveatedEncodingPreset: stringValue(object["foveated_encoding_preset"]) ?? "",
+            clientFoveationPreset: stringValue(object["client_foveation_preset"]) ?? "",
+            clientUpscaling: boolValue(object["client_upscaling"]) ?? false,
+            clientReprojectionMode: stringValue(object["client_reprojection_mode"]) ?? "",
+            abrMode: stringValue(object["abr_mode"]) ?? "",
+            abrState: stringValue(object["abr_state"]) ?? "",
+            abrProfile: stringValue(object["abr_profile"]) ?? "",
+            headsetAudio: boolValue(object["headset_audio"]) ?? false,
             latency: Latency(
                 serverPipelineMs: doubleValue(latencyObject["server_pipeline"]),
                 clientPipelineMs: doubleValue(latencyObject["client_pipeline"]),
                 clientReceiveToSubmitMs: doubleValue(latencyObject["client_receive_to_submit"]),
                 clientDecodeMs: doubleValue(latencyObject["client_decode"]),
                 clientCompositorMs: doubleValue(latencyObject["client_compositor"]),
-                predictionHorizonMs: doubleValue(latencyObject["prediction_horizon"])
+                predictionHorizonMs: doubleValue(latencyObject["prediction_horizon"]),
+                displayedFrameAgeMs: doubleValue(latencyObject["displayed_frame_age"])
             ),
             encode: Encode(
                 queueAverageMs: doubleValue(encodeObject["queue_avg"]),
@@ -169,7 +277,10 @@ struct HomeRuntimeStreamingStats: Equatable {
                 encoderDroppedFramesTotal: intValue(countersObject["encoder_dropped_frames_total"]) ?? 0,
                 replacedFramesDelta: intValue(countersObject["replaced_frames_delta"]) ?? 0,
                 keyframeRequestsDelta: intValue(countersObject["keyframe_requests_delta"]) ?? 0,
-                pendingDepthMax: intValue(countersObject["pending_depth_max"]) ?? 0
+                pendingDepthMax: intValue(countersObject["pending_depth_max"]) ?? 0,
+                reprojectedFramesDelta: intValue(countersObject["reprojected_frames_delta"]) ?? 0,
+                staleFrameReusesDelta: intValue(countersObject["stale_frame_reuses_delta"]) ?? 0,
+                renderPoseFallbacksDelta: intValue(countersObject["render_pose_fallbacks_delta"]) ?? 0
             )
         )
     }
@@ -180,6 +291,20 @@ struct HomeRuntimeStreamingStats: Equatable {
         }
         if let number = value as? NSNumber {
             return number.intValue
+        }
+        return nil
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        value as? String
+    }
+
+    private static func boolValue(_ value: Any?) -> Bool? {
+        if let value = value as? Bool {
+            return value
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
         }
         return nil
     }

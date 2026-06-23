@@ -32,6 +32,21 @@ public:
         bool keyframe = false;
     };
 
+    struct FoveationSettings
+    {
+        bool enabled = false;
+        uint32_t targetEyeWidth = 0;
+        uint32_t targetEyeHeight = 0;
+        float eyeWidthRatio = 1.0f;
+        float eyeHeightRatio = 1.0f;
+        float centerSizeX = 1.0f;
+        float centerSizeY = 1.0f;
+        float centerShiftX = 0.0f;
+        float centerShiftY = 0.0f;
+        float edgeRatioX = 1.0f;
+        float edgeRatioY = 1.0f;
+    };
+
     // Callback for each encoded NAL unit
     using OnNalUnitCallback = std::function<void(const uint8_t* data, size_t size,
                                                   bool isKeyframe, int64_t timestampNs)>;
@@ -47,16 +62,17 @@ public:
     bool Initialize(uint32_t width, uint32_t height, uint32_t fps,
                     uint32_t bitrateMbps, const GraphicsContext& graphicsContext);
     void Shutdown();
+    void SetFoveationSettings(const FoveationSettings& settings) { foveationSettings_ = settings; }
+    static bool SupportsFoveatedEncoding(const GraphicsContext& graphicsContext);
 
     // Encode one backend-native texture/image source.
     // The callback is invoked for each NAL unit produced
-    bool Encode(void* metalTexture, int64_t timestampNs, OnNalUnitCallback callback,
+    bool Encode(FrameImageSource imageSource, int64_t timestampNs, OnNalUnitCallback callback,
                 OnFrameEncodedCallback frameCallback = {});
 
     // Encode two backend-native texture/image sources side-by-side (left eye | right eye)
     // The combined image has double the width of a single eye
-    bool EncodeStereo(void* leftTexture, void* rightTexture,
-                      int64_t timestampNs, OnNalUnitCallback callback,
+    bool EncodeStereo(FrameSource frameSource, int64_t timestampNs, OnNalUnitCallback callback,
                       OnFrameEncodedCallback frameCallback = {});
 
     // Force a keyframe on the next encode
@@ -83,10 +99,11 @@ private:
         void* metalTexture = nullptr;     // CVMetalTextureRef
         void* tmpLeftTexture = nullptr;   // id<MTLTexture>
         void* tmpRightTexture = nullptr;  // id<MTLTexture>
+        void* foveatedScratchTexture = nullptr; // id<MTLTexture>
         bool inUse = false;
     };
 
-    bool EncodeInternal(void* leftTexture, void* rightTexture, bool stereo,
+    bool EncodeInternal(FrameSource frameSource, bool stereo,
                         int64_t timestampNs, OnNalUnitCallback callback,
                         OnFrameEncodedCallback frameCallback);
     bool AcquireSlot(size_t& outSlotIndex);
@@ -101,6 +118,8 @@ private:
         void* metalDevice = nullptr;      // id<MTLDevice>
         void* commandQueue = nullptr;     // id<MTLCommandQueue>
         void* scaler = nullptr;           // MPSImageBilinearScale*
+        void* foveationPipeline = nullptr; // id<MTLComputePipelineState>
+        void* foveationSampler = nullptr;  // id<MTLSamplerState>
     };
 
     struct FfmpegState
@@ -119,9 +138,11 @@ private:
     uint32_t eyeWidth_ = 0;   // Single eye width (width_/2 for stereo)
     uint32_t fps_ = 90;
     uint32_t bitrateMbps_ = 50;
+    FoveationSettings foveationSettings_ = {};
     uint32_t frameCount_ = 0;
     std::atomic<bool> forceKeyframe_{false};
     std::atomic<bool> shuttingDown_{false};
+    std::atomic<bool> foveationValidationWarningLogged_{false};
     std::atomic<uint32_t> droppedFrameCount_{0};
     std::atomic<uint32_t> inFlightFrameCount_{0};
     std::atomic<uint64_t> frameNumberCounter_{0};

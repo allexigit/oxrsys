@@ -107,13 +107,15 @@ private:
         uint32_t receivedPackets = 0;
         int64_t timestampNs = 0;
         std::vector<uint8_t> data;
-        std::vector<bool> packetReceived;
+        std::vector<uint8_t> packetReceived;
         std::vector<uint16_t> packetSizes;  // Actual size of each packet's payload
+        std::vector<uint8_t> compactedData;
 
         // FEC parity packets indexed by group number
         uint32_t fecGroupCount = 0;
-        std::vector<bool> fecReceived;
+        std::vector<uint8_t> fecReceived;
         std::vector<uint8_t> fecData;  // fecGroupCount * MAX_PACKET_PAYLOAD
+        std::vector<uint16_t> fecGroupLastPacketSizes;
     };
     PendingFrame pendingFrame_;
     OnNalUnitCallback nalCallback_;

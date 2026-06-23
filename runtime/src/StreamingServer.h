@@ -4,7 +4,9 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -14,6 +16,7 @@
 
 #include "RuntimeSockets.h"
 #include "GraphicsTypes.h"
+#include "StreamingAbr.h"
 #include "StreamingFrameQueue.h"
 
 // Shared protocol definitions
@@ -55,8 +58,9 @@ public:
     void Stop();
 
     // Queue a rendered frame for asynchronous latest-frame-only encoding.
-    // The handles are platform graphics resources retained/owned by Swapchain.
-    void SendFrame(void* leftTexture, void* rightTexture);
+    // The source owns backend graphics resources until the frame is encoded,
+    // dropped, or replaced by a newer pending frame.
+    void SendFrame(FrameSource frameSource);
 
     // Set the platform graphics device for VideoEncoder initialization.
     void SetGraphicsContext(const GraphicsContext& graphicsContext) { graphicsContext_ = graphicsContext; }
@@ -79,13 +83,32 @@ private:
 
     struct CachedPacket
     {
-        std::vector<uint8_t> data;  // Full packet (header + payload)
+        std::array<uint8_t, oxr::protocol::VIDEO_PACKET_SIZE> data = {};
+        size_t size = 0;
     };
 
     struct CachedFrame
     {
         uint32_t frameIndex = 0;
+        uint16_t packetCount = 0;
+        bool complete = false;
         std::vector<CachedPacket> packets;
+    };
+
+    struct EncodedNalUnit
+    {
+        std::vector<uint8_t> tcpPayload; // TcpVideoNalHeader followed by Annex-B NAL bytes
+        bool isKeyframe = false;
+    };
+
+    struct EncodedVideoFrame
+    {
+        uint32_t frameIndex = 0;
+        int64_t timestampNs = 0;
+        bool hasPose = false;
+        float headPosition[3] = {};
+        float headOrientation[4] = {0, 0, 0, 1};
+        std::vector<EncodedNalUnit> nals;
     };
 
     struct PacketDispatchState
@@ -106,6 +129,7 @@ private:
     void BroadcastThread();
     void ControlThread();
     void EncodeThread();
+    void VideoSendThread();
     void TcpControlThread();
     void TcpVideoThread();
     void TcpTrackingThread();
@@ -121,6 +145,10 @@ private:
     void HandleNackRequest(const oxr::protocol::NackRequest& request);
     void HandleControlPayload(const uint8_t* data, size_t size);
     void UpdatePredictionHorizon();
+    void QueueEncodedVideoFrame(EncodedVideoFrame frame);
+    void ClearVideoSendQueue();
+    void SendEncodedVideoFrame(const EncodedVideoFrame& frame);
+    void SendRenderPosePacket(const EncodedVideoFrame& frame);
     bool StartUsbTcpListeners();
     void SendUsbDisconnectBestEffort();
     void StopUsbTcpSockets();
@@ -132,7 +160,13 @@ private:
     uint32_t renderHeight_ = 0;
     uint32_t scaledWidth_ = 0;      // After resolution_scale (per eye)
     uint32_t scaledHeight_ = 0;     // After resolution_scale
+    uint32_t encodedWidth_ = 0;     // Actual encoded stereo width
+    uint32_t encodedHeight_ = 0;    // Actual encoded height
+    uint32_t foveatedTargetEyeWidth_ = 0;
+    uint32_t foveatedTargetEyeHeight_ = 0;
     uint32_t refreshRateHz_ = 90;
+    bool foveatedEncodingActive_ = false;
+    std::atomic_bool clientFoveatedEncodingActive_{false};
     std::atomic<uint32_t> targetRefreshRateHz_{90};
     std::atomic<float> clientPipelineLatencyMs_{18.0f};
     std::atomic<float> serverPipelineLatencyMs_{10.0f};
@@ -143,8 +177,20 @@ private:
     // Adaptive bitrate state
     std::atomic<uint32_t> configMaxBitrateMbps_{50};
     std::atomic<uint32_t> currentBitrateMbps_{50};
-    int64_t lastBitrateIncreaseTimeNs_ = 0;
     uint32_t lastKeyframeRequestCountForAbr_ = 0;
+    uint32_t lastVideoSendDroppedFrameCountForAbr_ = 0;
+    uint32_t lastEncoderDroppedFrameCountForAbr_ = 0;
+    oxrsys::streaming_abr::Controller abrController_;
+    std::mutex abrStateMutex_;
+    std::string abrModeName_ = "bitrate";
+    std::string abrStateName_ = "stable";
+    std::string abrProfileName_ = "bitrate";
+    std::atomic<float> clientDisplayedFrameAgeMs_{0.0f};
+    std::atomic<uint32_t> clientReprojectedFramesDelta_{0};
+    std::atomic<uint32_t> clientStaleFrameReusesDelta_{0};
+    std::atomic<uint32_t> clientRenderPoseFallbacksDelta_{0};
+    std::atomic<oxr::protocol::ClientReprojectionMode> clientReprojectionMode_{
+        oxr::protocol::ClientReprojectionMode::Off};
 
     // Sockets
     SocketHandle broadcastSocket_ = oxrsys::runtime_socket::InvalidSocket;
@@ -160,7 +206,7 @@ private:
     std::mutex disconnectMutex_;
     bool wifiEnabled_ = true;
     bool usbAdbEnabled_ = true;
-    bool clientUsesUsbAdb_ = false;
+    std::atomic_bool clientUsesUsbAdb_{false};
 
     // Client info
     std::string clientIp_;
@@ -172,6 +218,7 @@ private:
     std::thread broadcastThread_;
     std::thread controlThread_;
     std::thread encodeThread_;
+    std::thread videoSendThread_;
     std::thread tcpControlThread_;
     std::thread tcpVideoThread_;
     std::thread tcpTrackingThread_;
@@ -181,13 +228,29 @@ private:
     std::atomic<uint32_t> pendingFrameDepthMax_{0};
     std::atomic<uint32_t> replacedFrameCount_{0};
     std::atomic<uint32_t> requestKeyframeCount_{0};
+    std::atomic<uint32_t> requestKeyframeTotalForAbr_{0};
+    std::atomic<uint32_t> encoderDroppedFramesTotalForAbr_{0};
+    std::atomic<uint32_t> videoSendQueueDepthMax_{0};
+    std::atomic<uint32_t> videoSendDroppedFrames_{0};
+    std::atomic<uint32_t> videoSendDroppedFramesTotalForAbr_{0};
+    std::atomic<uint32_t> videoTcpSendFailures_{0};
+    std::atomic<uint32_t> videoUdpRetransmittedPackets_{0};
+    std::mutex videoSendMutex_;
+    std::condition_variable videoSendCv_;
+    std::deque<EncodedVideoFrame> videoSendQueue_;
+    static constexpr size_t MaxVideoSendQueueFrames = 2;
     std::mutex encoderMutex_;
 
-    static void SendNalUnit(const std::shared_ptr<PacketDispatchState>& dispatchState,
-                            uint32_t frameIndex, const uint8_t* data, size_t size,
-                            bool isKeyframe, int64_t timestampNs);
+    void SendNalUnit(const std::shared_ptr<PacketDispatchState>& dispatchState,
+                     uint32_t frameIndex, const uint8_t* data, size_t size,
+                     bool isKeyframe, int64_t timestampNs);
     static bool SendTcpRecord(SocketHandle socket, oxr::protocol::TcpRecordType type,
                               const void* payload, size_t payloadSize);
+    static bool SendTcpRecordParts(SocketHandle socket, oxr::protocol::TcpRecordType type,
+                                   const void* firstPayload, size_t firstPayloadSize,
+                                   const void* secondPayload, size_t secondPayloadSize);
+    static void MarkTcpVideoSendFailed(const std::shared_ptr<PacketDispatchState>& dispatchState,
+                                       SocketHandle socket);
 
     // Sub-components
     std::shared_ptr<VideoEncoder> encoder_;

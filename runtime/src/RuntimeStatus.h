@@ -18,6 +18,15 @@ public:
         uint32_t renderHeight = 0;
         uint32_t encodedWidth = 0;
         uint32_t encodedHeight = 0;
+        std::string encoderPreset;
+        std::string foveatedEncodingPreset;
+        std::string clientFoveationPreset;
+        bool clientUpscaling = false;
+        std::string clientReprojectionMode;
+        std::string abrMode;
+        std::string abrState;
+        std::string abrProfile;
+        bool headsetAudio = false;
 
         double serverPipelineLatencyMs = 0.0;
         double clientPipelineLatencyMs = 0.0;
@@ -25,6 +34,7 @@ public:
         double clientDecodeMs = 0.0;
         double clientCompositorMs = 0.0;
         double predictionHorizonMs = 0.0;
+        double displayedFrameAgeMs = 0.0;
 
         double encodeQueueAverageMs = 0.0;
         double encodeQueueP95Ms = 0.0;
@@ -42,6 +52,13 @@ public:
         uint32_t replacedFramesDelta = 0;
         uint32_t keyframeRequestsDelta = 0;
         uint32_t pendingDepthMax = 0;
+        uint32_t videoSendQueueDepthMax = 0;
+        uint32_t videoSendDroppedFramesDelta = 0;
+        uint32_t videoTcpSendFailuresDelta = 0;
+        uint32_t videoUdpRetransmittedPacketsDelta = 0;
+        uint32_t reprojectedFramesDelta = 0;
+        uint32_t staleFrameReusesDelta = 0;
+        uint32_t renderPoseFallbacksDelta = 0;
     };
 
     static void SetApplicationName(const std::string& applicationName);
