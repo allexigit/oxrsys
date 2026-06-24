@@ -5,7 +5,6 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
-    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
 
     var body: some View {
@@ -17,11 +16,27 @@ struct ContentView: View {
             Text(appModel.statusText)
                 .foregroundStyle(.secondary)
 
-            Button("Search") {
-                appModel.startDiscovery()
+            if appModel.connectionState == .streaming {
+                // Server already found and streaming: offer to (re-)enter the immersive view
+                // and to fully disconnect.
+                HStack(spacing: 12) {
+                    Button("Enter Immersive View") {
+                        appModel.enterImmersiveSpace()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(appModel.immersiveSpaceState != .closed)
+
+                    Button("Disconnect", role: .destructive) {
+                        appModel.disconnect()
+                    }
+                }
+            } else {
+                Button("Search") {
+                    appModel.startDiscovery()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(appModel.connectionState != .disconnected)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(appModel.connectionState != .disconnected)
         }
         .padding(28)
         .frame(width: 360, height: 180)
@@ -33,30 +48,35 @@ struct ContentView: View {
                 await synchronizePresentationState()
             }
         }
+        .onChange(of: appModel.wantsImmersiveSpace) { _, _ in
+            Task {
+                await synchronizePresentationState()
+            }
+        }
     }
 
+    /// Drives the immersive space from the user's intent (`wantsImmersiveSpace`) rather than the
+    /// raw connection state, so exiting via the Digital Crown returns to this menu instead of
+    /// auto re-entering. The control window is intentionally left open: `.full` immersion hides
+    /// it while immersed, and keeping it alive makes it reappear automatically on exit.
     private func synchronizePresentationState() async {
-        switch appModel.connectionState {
-        case .streaming:
+        let shouldBeImmersed = appModel.connectionState == .streaming && appModel.wantsImmersiveSpace
+
+        if shouldBeImmersed {
             guard appModel.immersiveSpaceState == .closed else { return }
             appModel.immersiveSpaceState = .inTransition
             switch await openImmersiveSpace(id: appModel.immersiveSpaceID) {
             case .opened:
                 appModel.immersiveSpaceDidOpen()
-                dismissWindow(id: appModel.controlWindowID)
             case .userCancelled, .error:
                 appModel.immersiveSpaceState = .closed
             @unknown default:
                 appModel.immersiveSpaceState = .closed
             }
-
-        case .disconnected, .discovering:
+        } else {
             guard appModel.immersiveSpaceState == .open else { return }
             appModel.immersiveSpaceState = .inTransition
             await dismissImmersiveSpace()
-
-        case .connecting:
-            break
         }
     }
 }

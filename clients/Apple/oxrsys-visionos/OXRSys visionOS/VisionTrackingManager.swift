@@ -34,9 +34,13 @@ struct VisionTrackingSnapshot: Sendable {
 }
 
 final class VisionTrackingManager: @unchecked Sendable {
-    private let session = ARKitSession()
-    let worldTracking = WorldTrackingProvider()
-    private let handTracking = HandTrackingProvider()
+    // ARKit sessions and data providers are single-use: once a provider stops (e.g. the
+    // immersive space closes) the same instance can't be re-run — it returns no anchors.
+    // These are recreated by `prepareForNewSession()` before each (re)entry so reconnecting
+    // gets live tracking instead of a permanently-stopped provider.
+    private var session = ARKitSession()
+    private(set) var worldTracking = WorldTrackingProvider()
+    private var handTracking = HandTrackingProvider()
     private let queue = DispatchQueue(label: "oxr.visionos.tracking", qos: .userInteractive)
 
     private var runTask: Task<Void, Never>?
@@ -69,15 +73,34 @@ final class VisionTrackingManager: @unchecked Sendable {
     func stop() {
         queue.async { [self] in
             guard running else { return }
-            running = false
-            sampleTimer?.cancel()
-            sampleTimer = nil
-            runTask?.cancel()
-            runTask = nil
-            accessoryTrackingProvider = nil
-            lastHeadOrientation = nil
+            tearDownLocked()
             print("[VisionTracking] Stopped")
         }
+    }
+
+    /// Recreate the ARKit session and data providers so the next `start()` runs on fresh,
+    /// runnable instances. ARKit providers are single-use — reusing a stopped provider yields
+    /// no anchors (no tracking) until the app is relaunched. Call on the main thread before
+    /// (re)opening the immersive space so the renderer captures the new world-tracking provider.
+    func prepareForNewSession() {
+        queue.sync { [self] in
+            tearDownLocked()
+            session = ARKitSession()
+            worldTracking = WorldTrackingProvider()
+            handTracking = HandTrackingProvider()
+        }
+    }
+
+    /// Stop the running session and cancel work. Must be called on `queue`.
+    private func tearDownLocked() {
+        running = false
+        sampleTimer?.cancel()
+        sampleTimer = nil
+        runTask?.cancel()
+        runTask = nil
+        session.stop()
+        accessoryTrackingProvider = nil
+        lastHeadOrientation = nil
     }
 
     private func runSession() async {

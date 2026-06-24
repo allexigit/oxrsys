@@ -114,6 +114,10 @@ final class AppModel {
     let controlWindowID = "ControlWindow"
 
     var immersiveSpaceState = ImmersiveSpaceState.closed
+    /// User intent to be in the immersive view, kept separate from `connectionState` so that
+    /// exiting the immersive view (Digital Crown) lands on the menu instead of auto re-entering,
+    /// and the menu can offer an explicit "Enter" button while still connected.
+    var wantsImmersiveSpace = false
     var connectionState: ConnectionState = .disconnected
     var discoveredServer: DiscoveredServer?
     var statusText = "Tap Search to find the runtime"
@@ -300,6 +304,11 @@ final class AppModel {
         let serverAddress = resolvedServerAddress(for: server)
         let refreshRateHz = refreshRate
 
+        // Fresh ARKit session/providers for this connection — single-use providers can't be
+        // re-run after a previous disconnect. Must happen before the immersive space opens so
+        // the renderer captures the live world-tracking provider.
+        trackingManager.prepareForNewSession()
+
         connectionState = .connecting
         statusText = "Connecting to \(server.name)..."
 
@@ -359,7 +368,17 @@ final class AppModel {
         updateTrackingState()
 
         connectionState = .streaming
+        wantsImmersiveSpace = true
         statusText = "Streaming from \(server.name) via \(serverAddress)"
+    }
+
+    /// Re-enter the immersive view from the menu while already connected (server already found).
+    func enterImmersiveSpace() {
+        guard connectionState == .streaming else { return }
+        // Recreate tracking providers before reopening so head tracking resumes — the previous
+        // providers stopped when the immersive space closed and can't be re-run.
+        trackingManager.prepareForNewSession()
+        wantsImmersiveSpace = true
     }
 
     func disconnect() {
@@ -373,6 +392,7 @@ final class AppModel {
         latencyReporter.reset()
 
         connectionState = .disconnected
+        wantsImmersiveSpace = false
         discoveredServer = nil
         framesDecoded = 0
         isTrackingActive = false
@@ -393,6 +413,9 @@ final class AppModel {
 
     func immersiveSpaceDidClose() {
         immersiveSpaceState = .closed
+        // The view was dismissed (e.g. Digital Crown); drop the intent so we settle on the
+        // menu and let the user re-enter explicitly instead of immediately reopening.
+        wantsImmersiveSpace = false
         updateTrackingState()
     }
 
