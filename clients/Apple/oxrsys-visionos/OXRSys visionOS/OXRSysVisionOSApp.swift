@@ -39,5 +39,6 @@ struct Vision_PlayerApp: App {
             ImmersiveSpaceContent(appModel: appModel)
         }
         .immersionStyle(selection: .constant(.full), in: .full)
+        .upperLimbVisibility(appModel.showHandsInImmersive ? .visible : .hidden)
     }
 }

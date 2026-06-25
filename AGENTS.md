@@ -31,8 +31,10 @@ bounded encoded-frame sender queue so socket backpressure does not run inside Vi
 the Quest client drains MediaCodec output off the XR frame loop, and the runtime ABR controller
 uses client latency, displayed frame age, keyframe requests, send/encoder drops, and reprojection
 pressure to adjust bitrate with sliding windows and hysteresis. The visionOS
-viewer now starts from a minimal floating search window, enters immersive VR automatically when the
-stream connects, and sends head pose, hand joints, and first-pass tracked accessory controller data
+viewer now starts from a compact floating control window for server search, explicit connection,
+optional automatic immersive entry, default hidden-window immersive mode with return-to-menu
+immersive re-entry/disconnect controls, optional keep-window-visible behavior, visible-hands
+upper-limb control, and head pose, hand joints, and first-pass tracked accessory controller data
 while the immersive space is open. The macOS SwiftUI Home app now targets direct notarized
 distribution so it can scan known apps, launch compatible apps with the user-selected
 `XR_RUNTIME_JSON`, register that selected runtime, and capture app logs.

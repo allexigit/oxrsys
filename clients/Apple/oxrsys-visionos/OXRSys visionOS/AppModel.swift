@@ -160,6 +160,10 @@ final class AppModel {
     /// exiting the immersive view (Digital Crown) lands on the menu instead of auto re-entering,
     /// and the menu can offer an explicit "Enter" button while still connected.
     var wantsImmersiveSpace = false
+    var autoEnterImmersiveOnConnect = true
+    var showHandsInImmersive = true
+    var keepControlWindowVisibleInImmersive = false
+    var shouldRestoreControlWindowOnImmersiveClose = false
     var connectionState: ConnectionState = .disconnected
     var discoveredServer: DiscoveredServer?
     var statusText = "Tap Search to find the runtime"
@@ -336,8 +340,14 @@ final class AppModel {
             Task { @MainActor [weak self] in
                 guard let self, self.connectionState == .discovering else { return }
                 self.discoveredServer = server
-                self.statusText = "Found \(server.name), connecting..."
-                self.connect()
+                self.discovery.stop()
+                if self.autoEnterImmersiveOnConnect {
+                    self.statusText = "Found \(server.name), connecting..."
+                    self.connect()
+                } else {
+                    self.connectionState = .disconnected
+                    self.statusText = "Found \(server.name)"
+                }
             }
         }
     }
@@ -414,7 +424,7 @@ final class AppModel {
         updateTrackingState()
 
         connectionState = .streaming
-        wantsImmersiveSpace = true
+        wantsImmersiveSpace = autoEnterImmersiveOnConnect
         statusText = "Streaming from \(server.name) via \(serverAddress)"
     }
 

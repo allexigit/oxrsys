@@ -20,7 +20,9 @@ recovering from drops, and tweaking a few settings all feel effortless and
 
 ### 1. Find / connect to a server
 - **Search for server** (discovery) — current entry point.
-- Show discovered server(s) with name; auto-connect or let the user pick.
+- With `Auto-enter immersive` enabled, connect to the first discovered server.
+  With it disabled, show the discovered server name and let the user connect
+  explicitly.
 - Clear status text through every phase: searching → found → connecting →
   streaming → error.
 
@@ -36,9 +38,10 @@ recovering from drops, and tweaking a few settings all feel effortless and
 ### 3. Enter / exit the immersive view
 - After a server is found, allow re-entering the immersive view with a button
   (we already found the server — no need to re-search).
-- **Setting: should the control window hide when entering the immersive view?**
-  In full immersion the window is hidden anyway; make the behavior explicit and
-  predictable so exiting (Digital Crown) always returns to a usable menu.
+- `Auto-enter immersive` controls whether connecting immediately opens the
+  immersive space. `Keep window in immersive` controls whether the floating
+  window remains open while immersed; the default hides it and restores it after
+  immersive exit.
 - Entering/leaving should be one obvious action, never ambiguous.
 
 ### 4. Debug / stats overlay
@@ -50,18 +53,22 @@ recovering from drops, and tweaking a few settings all feel effortless and
 ### 5. Settings
 - **Immersion / passthrough control**: make sure we can show *only* the rendered
   view and hide the real world as much as visionOS permits (immersion style).
+- `Show hands` maps to visionOS upper-limb visibility while immersed.
 - Refresh-rate / quality hints if the server supports them.
 - Reconnection behavior (auto-retry on/off, window-hide-on-enter on/off).
 - Keep settings few and well-labeled.
 
 ## Feature checklist
 
-- [ ] Server discovery list + pick/auto-connect
-- [ ] Connection state machine surfaced cleanly (disconnected / discovering /
+- [ ] Server discovery list + multi-server pick
+- [x] Single-server discovery + explicit connect
+- [x] Connection state machine surfaced cleanly (disconnected / discovering /
       connecting / streaming / lost)
 - [ ] Reconnect-to-previous vs. find-new on disconnect
-- [ ] Re-enter immersive view button after server is known
-- [ ] Setting: hide control window on entering immersive
+- [x] Re-enter immersive view button after server is known
+- [x] Setting: auto-enter immersive on connect
+- [x] Setting: keep control window visible while immersed
+- [x] Setting: visible hands while immersed
 - [ ] Setting: immersion style (max-hide passthrough / pure rendered)
 - [ ] Debug/stats overlay toggle
 - [ ] Polished transitions (no empty/stuck states, no flashes)
