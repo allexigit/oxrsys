@@ -178,6 +178,35 @@ public final class VideoDecoder: @unchecked Sendable {
         return oldSession
     }
 
+    /// Creates a decompression session that outputs the given Metal-compatible pixel format.
+    /// Returns the session and the creation status so callers can fall back to another format.
+    private func makeDecompressionSession(
+        formatDescription fmt: CMFormatDescription,
+        pixelFormat: OSType
+    ) -> (VTDecompressionSession?, OSStatus) {
+        let decoderAttrs: [String: Any] = [
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat
+        ]
+
+        var outputCallback = VTDecompressionOutputCallbackRecord(
+            decompressionOutputCallback: decompressionCallback,
+            decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
+        )
+
+        var newSession: VTDecompressionSession?
+        let status = VTDecompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            formatDescription: fmt,
+            decoderSpecification: nil,
+            imageBufferAttributes: decoderAttrs as CFDictionary,
+            outputCallback: &outputCallback,
+            decompressionSessionOut: &newSession
+        )
+        return (newSession, status)
+    }
+
     private func tryCreateFormatDescription() {
         let snapshot = locked { () -> (VideoCodec, Data?, Data, Data)? in
             guard let currentSps = sps, let currentPps = pps else { return nil }
@@ -250,32 +279,33 @@ public final class VideoDecoder: @unchecked Sendable {
             return
         }
 
-        let outputPixelFormat = locked { prefer10Bit && codec == .h265 }
-            ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        let decoderAttrs: [String: Any] = [
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
-            kCVPixelBufferPixelFormatTypeKey as String: outputPixelFormat
-        ]
-
-        var outputCallback = VTDecompressionOutputCallbackRecord(
-            decompressionOutputCallback: decompressionCallback,
-            decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
-        )
+        // Prefer a 10-bit output surface for HEVC Main10, but fall back to 8-bit if the decoder
+        // refuses one — e.g. an 8-bit Main stream from a server with 10-bit disabled (the default).
+        // Without this fallback a rejected 10-bit request fails session creation outright → black
+        // screen. The renderer picks its color conversion from the buffer's actual format, so
+        // whichever surface we get displays correctly.
+        let want10Bit = locked { prefer10Bit && codec == .h265 }
+        let candidateFormats: [OSType] = want10Bit
+            ? [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+               kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
+            : [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
 
         var newSession: VTDecompressionSession?
-        let sessionStatus = VTDecompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            formatDescription: fmt,
-            decoderSpecification: nil,
-            imageBufferAttributes: decoderAttrs as CFDictionary,
-            outputCallback: &outputCallback,
-            decompressionSessionOut: &newSession
-        )
+        var chosenFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        var lastStatus: OSStatus = noErr
+        for pixelFormat in candidateFormats {
+            let (created, status) = makeDecompressionSession(formatDescription: fmt, pixelFormat: pixelFormat)
+            if let created {
+                newSession = created
+                chosenFormat = pixelFormat
+                break
+            }
+            lastStatus = status
+            print("[VideoDecoder/\(codec.logName)] Decompression session unavailable for pixel format '\(pixelFormat)' (\(status)); trying next")
+        }
 
-        guard sessionStatus == noErr, let newSession else {
-            print("[VideoDecoder/\(codec.logName)] Failed to create decompression session: \(sessionStatus)")
+        guard let newSession else {
+            print("[VideoDecoder/\(codec.logName)] Failed to create decompression session: \(lastStatus)")
             return
         }
 
@@ -293,7 +323,8 @@ public final class VideoDecoder: @unchecked Sendable {
         }
 
         let dim = CMVideoFormatDescriptionGetDimensions(fmt)
-        print("[VideoDecoder/\(codec.logName)] Decoder session created - \(dim.width)x\(dim.height)")
+        let bitLabel = chosenFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ? "10-bit" : "8-bit"
+        print("[VideoDecoder/\(codec.logName)] Decoder session created - \(dim.width)x\(dim.height) (\(bitLabel))")
     }
 
     private func decodeSlice(_ nalUnit: Data, codec: VideoCodec, presentationTimeNs: Int64) {

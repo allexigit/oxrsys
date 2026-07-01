@@ -205,19 +205,19 @@ actor ImmersiveRenderer {
 
         encoder.setFragmentBytes(&reprojData, length: MemoryLayout<ReprojData>.stride * reprojData.count, index: 0)
 
+        // Bind color params unconditionally (default 8-bit) so the fragment shader never reads an
+        // unbound buffer(1) on frames that draw before the first decoded pixel buffer arrives.
+        var colorParams = VideoColorParams(range: SIMD4<Float>(16.0 / 255.0, 255.0 / 219.0,
+                                                               128.0 / 255.0, 255.0 / 224.0))
         if let pixelBuffer = frame.pixelBuffer {
             let is10Bit = CVPixelBufferGetPixelFormatType(pixelBuffer) ==
                 kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-            // 10-bit bi-planar samples occupy the high 10 bits of each 16-bit Metal channel.
-            // Use their exact normalized code values instead of approximating them as 8-bit.
-            var colorParams = VideoColorParams(range: is10Bit
-                ? SIMD4<Float>(4096.0 / 65535.0, 65535.0 / 56064.0,
-                               32768.0 / 65535.0, 65535.0 / 57344.0)
-                : SIMD4<Float>(16.0 / 255.0, 255.0 / 219.0,
-                               128.0 / 255.0, 255.0 / 224.0))
-            encoder.setFragmentBytes(&colorParams,
-                                     length: MemoryLayout<VideoColorParams>.stride,
-                                     index: 1)
+            if is10Bit {
+                // 10-bit bi-planar samples occupy the high 10 bits of each 16-bit Metal channel.
+                // Use their exact normalized code values instead of approximating them as 8-bit.
+                colorParams.range = SIMD4<Float>(4096.0 / 65535.0, 65535.0 / 56064.0,
+                                                 32768.0 / 65535.0, 65535.0 / 57344.0)
+            }
             let lumaFormat: MTLPixelFormat = is10Bit ? .r16Unorm : .r8Unorm
             let chromaFormat: MTLPixelFormat = is10Bit ? .rg16Unorm : .rg8Unorm
             if let luma = makeTexture(from: pixelBuffer, plane: 0, format: lumaFormat),
@@ -226,6 +226,9 @@ actor ImmersiveRenderer {
                 encoder.setFragmentTexture(chroma, index: 1)
             }
         }
+        encoder.setFragmentBytes(&colorParams,
+                                 length: MemoryLayout<VideoColorParams>.stride,
+                                 index: 1)
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
