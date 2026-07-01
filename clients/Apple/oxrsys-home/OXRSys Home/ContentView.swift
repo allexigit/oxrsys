@@ -27,10 +27,7 @@ struct ContentView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
 
-            TabView(selection: Binding(
-                get: { model.selectedTab },
-                set: { model.selectedTab = $0 }
-            )) {
+            TabView(selection: $model.selectedTab) {
                 appsTab
                     .tag(HomeTab.apps)
                     .tabItem {
