@@ -230,6 +230,13 @@ actor ImmersiveRenderer {
                                  length: MemoryLayout<VideoColorParams>.stride,
                                  index: 1)
 
+        // Foveation inverse-warp params (passthrough unless the server is foveating). Static per
+        // connection; bound every frame so the shader's buffer(2) is always populated.
+        var fovParams = appModel.foveationParams()
+        encoder.setFragmentBytes(&fovParams,
+                                 length: MemoryLayout<FoveationShaderParams>.stride,
+                                 index: 2)
+
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
         drawable.encodePresent(commandBuffer: commandBuffer)

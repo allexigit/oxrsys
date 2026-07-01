@@ -127,6 +127,36 @@ private final class RenderPoseReprojector: @unchecked Sendable {
     }
 }
 
+/// Foveated-encoding (AADT) parameters handed to the fragment shader. Memory layout must match
+/// the Metal `FoveationParams` struct. `enabled == 0` is a passthrough.
+struct FoveationShaderParams {
+    var enabled: UInt32 = 0
+    var pad: UInt32 = 0
+    var centerSize: SIMD2<Float> = SIMD2<Float>(1, 1)
+    var centerShift: SIMD2<Float> = SIMD2<Float>(0, 0)
+    var edgeRatio: SIMD2<Float> = SIMD2<Float>(1, 1)
+    var eyeSizeRatio: SIMD2<Float> = SIMD2<Float>(1, 1)
+}
+
+/// Holds the foveation parameters for the renderer to read each frame. Computed once per
+/// connection from the server announce (dynamic reconfiguration is not handled yet).
+private final class FoveationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var params = FoveationShaderParams()
+
+    func set(_ newValue: FoveationShaderParams) {
+        lock.lock()
+        params = newValue
+        lock.unlock()
+    }
+
+    func get() -> FoveationShaderParams {
+        lock.lock()
+        defer { lock.unlock() }
+        return params
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -183,6 +213,7 @@ final class AppModel {
     private nonisolated let keyframeRecoveryState = KeyframeRecoveryState()
     private nonisolated let eyeProjectionState = EyeProjectionState()
     private nonisolated let renderPoseReprojector = RenderPoseReprojector()
+    private nonisolated let foveationState = FoveationState()
 
     private var statsTimer: Timer?
     private var lastStatsTimeNs: Int64 = 0
@@ -416,12 +447,16 @@ final class AppModel {
 
         Thread.sleep(forTimeInterval: 0.05)
 
+        // The server foveates and 10-bit-encodes only when the client advertises it can decode
+        // the result; compute the inverse-warp params from what the server announces it will send.
+        foveationState.set(Self.foveationParams(announce: server.announce, enabled: true))
+
         let connectionServer = DiscoveredServer(announce: server.announce, address: serverAddress)
         discovery.sendConnect(
             to: connectionServer,
             deviceName: "OXRSys visionOS",
             refreshRateHz: UInt32(refreshRateHz),
-            clientCapabilities: ClientCapabilityFlags.tenBitEncoding
+            clientCapabilities: ClientCapabilityFlags.tenBitEncoding | ClientCapabilityFlags.foveatedEncoding
         )
         trackingSender.connect(serverIP: serverAddress)
         controlChannel.connect(serverIP: serverAddress)
@@ -462,6 +497,48 @@ final class AppModel {
         statusText = "Tap Search to find the runtime"
         pixelBufferState.set(nil, presentationTimeNs: 0)
         keyframeRecoveryState.reset()
+        foveationState.set(FoveationShaderParams())
+    }
+
+    /// Foveated-encoding parameters for the fragment shader's inverse warp. Passthrough unless the
+    /// server is sending a foveated stream.
+    nonisolated func foveationParams() -> FoveationShaderParams {
+        foveationState.get()
+    }
+
+    /// Builds the inverse-AADT shader parameters from the server announce so the un-warp matches
+    /// the server's encoded layout. Passthrough unless the client opted in and the server is
+    /// actually foveating (edge ratios > 1).
+    nonisolated private static func foveationParams(announce: ServerAnnounce,
+                                                    enabled: Bool) -> FoveationShaderParams {
+        var params = FoveationShaderParams()
+        let serverFoveating = (announce.serverFeatures & ServerFeatureFlags.foveatedEncoding) != 0
+        let edgeX = announce.foveationEdgeRatioX
+        let edgeY = announce.foveationEdgeRatioY
+        guard enabled, serverFoveating, edgeX > 1, edgeY > 1 else { return params }
+
+        let renderW = Float(max(announce.renderWidth / 2, 1))
+        let renderH = Float(max(announce.renderHeight, 1))
+        let encodedFullW = announce.encodedWidth > 0 ? announce.encodedWidth : announce.renderWidth
+        let encodedFullH = announce.encodedHeight > 0 ? announce.encodedHeight : announce.renderHeight
+        let encW = Float(max(encodedFullW / 2, 1))
+        let encH = Float(max(encodedFullH, 1))
+
+        func activeRatio(_ target: Float, _ encoded: Float, _ centerSize: Float, _ edgeRatio: Float) -> Float {
+            guard target > 0, encoded > 0, edgeRatio > 1 else { return 1 }
+            let scale = centerSize + (1 - centerSize) / edgeRatio
+            return min(max(scale * target / encoded, 0.0001), 1)
+        }
+
+        params.enabled = 1
+        params.centerSize = SIMD2<Float>(announce.foveationCenterSizeX, announce.foveationCenterSizeY)
+        params.centerShift = SIMD2<Float>(announce.foveationCenterShiftX, announce.foveationCenterShiftY)
+        params.edgeRatio = SIMD2<Float>(edgeX, edgeY)
+        params.eyeSizeRatio = SIMD2<Float>(
+            activeRatio(renderW, encW, announce.foveationCenterSizeX, edgeX),
+            activeRatio(renderH, encH, announce.foveationCenterSizeY, edgeY)
+        )
+        return params
     }
 
     func requestKeyframe() {

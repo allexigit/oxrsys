@@ -25,6 +25,50 @@ struct VideoColorParams {
     float4 range; // luma offset, luma scale, chroma center, chroma scale
 };
 
+// Foveated-encoding (AADT) parameters. `enabled == 0` is an exact passthrough, so this is inert
+// unless the server is actually sending a foveated stream.
+struct FoveationParams {
+    uint enabled;
+    uint _pad;
+    float2 centerSize;
+    float2 centerShift;
+    float2 edgeRatio;
+    float2 eyeSizeRatio; // foveated content fraction of the encoded eye region per axis
+};
+
+// ALVR axis-aligned foveated-encoding inverse mapping (MIT licensed). `compressAxis` maps an
+// encoded (foveated) eye-UV to the displayed eye-UV the server warped it from; `decompressAxis`
+// inverts it by bisection so each output pixel fetches the correct encoded texel. Matches the
+// Quest client's AADT transform so the un-warp lines up with the server's encoded layout.
+static float compressAxis(float eyeUv, float centerSize, float centerShift, float edgeRatio) {
+    float c0 = (1.0 - centerSize) * 0.5;
+    float c1 = (edgeRatio - 1.0) * c0 * (centerShift + 1.0) / edgeRatio;
+    float c2 = (edgeRatio - 1.0) * centerSize + 1.0;
+    float loBound = c0 * (centerShift + 1.0) / c2;
+    float hiBound = c0 * (centerShift - 1.0) / c2 + 1.0;
+    float center = eyeUv * c2 / edgeRatio + c1;
+    float d2 = eyeUv * c2;
+    float d3 = (eyeUv - 1.0) * c2 + 1.0;
+    float g1 = loBound > 0.0 ? eyeUv / loBound : 1.0;
+    float g2 = (1.0 - hiBound) > 0.0 ? (1.0 - eyeUv) / (1.0 - hiBound) : 1.0;
+    float leftEdge = g1 * center + (1.0 - g1) * d2;
+    float rightEdge = g2 * center + (1.0 - g2) * d3;
+    if (eyeUv < loBound) { return leftEdge; }
+    if (eyeUv > hiBound) { return rightEdge; }
+    return center;
+}
+
+static float decompressAxis(float targetUv, float centerSize, float centerShift, float edgeRatio) {
+    float lo = 0.0;
+    float hi = 1.0;
+    for (int i = 0; i < 10; ++i) {
+        float mid = (lo + hi) * 0.5;
+        float mapped = compressAxis(mid, centerSize, centerShift, edgeRatio);
+        if (mapped < targetUv) { lo = mid; } else { hi = mid; }
+    }
+    return (lo + hi) * 0.5;
+}
+
 struct StereoVertexOut {
     float4 position [[position]];
     float2 texCoord; // output-view screen position in [0,1] for this eye
@@ -57,7 +101,8 @@ fragment float4 stereoImmersiveFragment(
     texture2d<float> lumaTexture [[texture(0)]],
     texture2d<float> chromaTexture [[texture(1)]],
     constant ReprojData *reproj [[buffer(0)]],
-    constant VideoColorParams &colorParams [[buffer(1)]]
+    constant VideoColorParams &colorParams [[buffer(1)]],
+    constant FoveationParams &fov [[buffer(2)]]
 ) {
     constexpr sampler textureSampler(address::clamp_to_edge,
                                      mag_filter::linear,
@@ -92,8 +137,21 @@ fragment float4 stereoImmersiveFragment(
                        (up - yPlane) / (up + down));
     }
 
+    // Undo the server's foveated-encoding warp (passthrough when fov.enabled == 0): map this
+    // displayed eye-UV back to the encoded texel it came from, then scale by the foveated
+    // content's fraction of the encoded eye region.
+    float2 sourceUV = eyeUV;
+    if (fov.enabled != 0) {
+        float2 t = clamp(eyeUV, 0.0, 1.0);
+        sourceUV.x = decompressAxis(t.x, fov.centerSize.x, fov.centerShift.x, fov.edgeRatio.x)
+            * fov.eyeSizeRatio.x;
+        sourceUV.y = decompressAxis(t.y, fov.centerSize.y, fov.centerShift.y, fov.edgeRatio.y)
+            * fov.eyeSizeRatio.y;
+        sourceUV = clamp(sourceUV, 0.0, 1.0);
+    }
+
     float eyeOffset = in.eyeIndex * 0.5;
-    float2 stereoUV = float2(eyeUV.x * 0.5 + eyeOffset, eyeUV.y);
+    float2 stereoUV = float2(sourceUV.x * 0.5 + eyeOffset, sourceUV.y);
 
     float yLuma = lumaTexture.sample(textureSampler, stereoUV).r;
     float2 cbcr = chromaTexture.sample(textureSampler, stereoUV).rg;
