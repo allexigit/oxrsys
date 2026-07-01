@@ -8,7 +8,10 @@ import os
 import simd
 
 nonisolated private enum ImmersiveRendererConstants {
-    static let maxBuffersInFlight = 3
+    // 2, not 3: the CompositorServices frame clock is the real pacer, so a third in-flight buffer
+    // only lets the CPU drift an extra frame ahead — pure added latency (~1 frame, ~11 ms @ 90 Hz)
+    // with no throughput gain for a video blit. Drop to 2 to shave that frame.
+    static let maxBuffersInFlight = 2
 }
 
 extension LayerRenderer.Clock.Instant {
