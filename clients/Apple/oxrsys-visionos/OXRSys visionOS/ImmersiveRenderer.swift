@@ -55,6 +55,12 @@ actor ImmersiveRenderer {
         var tangents: SIMD4<Float>   // (left, right, up, down) positive tangent magnitudes
     }
 
+    /// Normalized video-range conversion constants consumed by the Metal shader:
+    /// (luma offset, luma scale, chroma center, chroma scale).
+    struct VideoColorParams {
+        var range: SIMD4<Float>
+    }
+
     init(layerRenderer: LayerRenderer, appModel: AppModel, worldTracking: WorldTrackingProvider) {
         self.layerRenderer = layerRenderer
         self.appModel = appModel
@@ -202,6 +208,16 @@ actor ImmersiveRenderer {
         if let pixelBuffer = frame.pixelBuffer {
             let is10Bit = CVPixelBufferGetPixelFormatType(pixelBuffer) ==
                 kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            // 10-bit bi-planar samples occupy the high 10 bits of each 16-bit Metal channel.
+            // Use their exact normalized code values instead of approximating them as 8-bit.
+            var colorParams = VideoColorParams(range: is10Bit
+                ? SIMD4<Float>(4096.0 / 65535.0, 65535.0 / 56064.0,
+                               32768.0 / 65535.0, 65535.0 / 57344.0)
+                : SIMD4<Float>(16.0 / 255.0, 255.0 / 219.0,
+                               128.0 / 255.0, 255.0 / 224.0))
+            encoder.setFragmentBytes(&colorParams,
+                                     length: MemoryLayout<VideoColorParams>.stride,
+                                     index: 1)
             let lumaFormat: MTLPixelFormat = is10Bit ? .r16Unorm : .r8Unorm
             let chromaFormat: MTLPixelFormat = is10Bit ? .rg16Unorm : .rg8Unorm
             if let luma = makeTexture(from: pixelBuffer, plane: 0, format: lumaFormat),

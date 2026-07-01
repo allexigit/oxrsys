@@ -670,6 +670,23 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
     VTSessionSetProperty(compressionSession,
         kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
 
+    // Define one deterministic SDR color contract for every encoded stream. VideoToolbox embeds
+    // these values in H.264/H.265 metadata and uses the matching matrix for RGB-to-YCbCr conversion.
+    const OSStatus primariesStatus = VTSessionSetProperty(compressionSession,
+        kVTCompressionPropertyKey_ColorPrimaries,
+        kCVImageBufferColorPrimaries_ITU_R_709_2);
+    const OSStatus transferStatus = VTSessionSetProperty(compressionSession,
+        kVTCompressionPropertyKey_TransferFunction,
+        kCVImageBufferTransferFunction_ITU_R_709_2);
+    const OSStatus matrixStatus = VTSessionSetProperty(compressionSession,
+        kVTCompressionPropertyKey_YCbCrMatrix,
+        kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+    if (primariesStatus != noErr || transferStatus != noErr || matrixStatus != noErr)
+    {
+        spdlog::warn("VideoEncoder: failed to apply complete BT.709 color metadata (primaries={} transfer={} matrix={})",
+                     primariesStatus, transferStatus, matrixStatus);
+    }
+
     const ConfigValues config = Config::Get().GetValues();
     const std::string& preset = config.encoderPreset;
     const OSStatus profileStatus = VTSessionSetProperty(compressionSession,

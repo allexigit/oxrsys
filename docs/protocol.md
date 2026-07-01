@@ -98,6 +98,11 @@ selected `VideoCodec`, so the wire format does not need a codec-specific stream.
 uses Main10 only when this capability is present, `streaming.encoder_10bit` is enabled, and H.265 is
 the negotiated codec. H.264 and clients without the capability receive 8-bit video.
 
+Apple VideoToolbox streams use BT.709 SDR primaries, transfer function, and YCbCr matrix with
+limited/video-range samples. Clients that sample decoder planes directly must expand the applicable
+8-bit or 10-bit limited range before converting to RGB. This color contract does not change the
+codec negotiation or encoded bandwidth.
+
 The runtime announces the configured preferred headset refresh rate. Current Home-supported values
 are `60`, `72`, `80`, `90`, and `120` Hz. Quest clients request the announced value through
 `XR_FB_display_refresh_rate` when available and report the active rate back in

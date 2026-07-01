@@ -21,6 +21,10 @@ struct ReprojData {
     float4 tangents;  // (left, right, up, down) positive tangent magnitudes for this eye
 };
 
+struct VideoColorParams {
+    float4 range; // luma offset, luma scale, chroma center, chroma scale
+};
+
 struct StereoVertexOut {
     float4 position [[position]];
     float2 texCoord; // output-view screen position in [0,1] for this eye
@@ -52,7 +56,8 @@ fragment float4 stereoImmersiveFragment(
     StereoVertexOut in [[stage_in]],
     texture2d<float> lumaTexture [[texture(0)]],
     texture2d<float> chromaTexture [[texture(1)]],
-    constant ReprojData *reproj [[buffer(0)]]
+    constant ReprojData *reproj [[buffer(0)]],
+    constant VideoColorParams &colorParams [[buffer(1)]]
 ) {
     constexpr sampler textureSampler(address::clamp_to_edge,
                                      mag_filter::linear,
@@ -91,10 +96,15 @@ fragment float4 stereoImmersiveFragment(
     float2 stereoUV = float2(eyeUV.x * 0.5 + eyeOffset, eyeUV.y);
 
     float yLuma = lumaTexture.sample(textureSampler, stereoUV).r;
-    float2 cbcr = chromaTexture.sample(textureSampler, stereoUV).rg - float2(0.5, 0.5);
+    float2 cbcr = chromaTexture.sample(textureSampler, stereoUV).rg;
 
-    float r = yLuma + 1.4020 * cbcr.y;
-    float g = yLuma - 0.3441 * cbcr.x - 0.7141 * cbcr.y;
-    float b = yLuma + 1.7720 * cbcr.x;
-    return float4(r, g, b, 1.0);
+    // The streaming contract is limited/video-range BT.709 SDR. Expand luma and chroma using
+    // bit-depth-specific normalized code values supplied by the renderer, then convert to RGB.
+    float luma = (yLuma - colorParams.range.x) * colorParams.range.y;
+    float cb = (cbcr.x - colorParams.range.z) * colorParams.range.w;
+    float cr = (cbcr.y - colorParams.range.z) * colorParams.range.w;
+    float3 rgb = float3(luma + 1.5748 * cr,
+                        luma - 0.1873 * cb - 0.4681 * cr,
+                        luma + 1.8556 * cb);
+    return float4(clamp(rgb, 0.0, 1.0), 1.0);
 }

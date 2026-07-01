@@ -22,6 +22,8 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Changed
 
+- Corrected visionOS streamed-video color conversion by defining a BT.709 SDR encoder contract and expanding VideoToolbox limited-range YCbCr with exact 8-bit and 10-bit code ranges before RGB conversion, restoring proper black levels and color balance without changing stream bandwidth.
+
 - Split non-Apple swapchain implementation by backend so Vulkan, Linux OpenGL, D3D11, and D3D12 resources live in separate files behind explicit platform/API guards.
 - Promoted Linux Vulkan/FFmpeg runtime support from scaffolding to Vulkan swapchains, release-time staging readback, H.264/H.265 encode, and backend readback metadata shared by the existing FFmpeg encoder path.
 - Updated Qt simulator video preview with H.264/H.265 decode selection.
