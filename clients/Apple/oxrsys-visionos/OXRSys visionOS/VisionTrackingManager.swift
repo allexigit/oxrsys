@@ -7,6 +7,23 @@ import OXRSysStreaming
 import QuartzCore
 import simd
 
+/// Orientation correction for emulated (hand-derived) controller poses. The hand frame points
+/// +Z toward the fingertips, opposite the OpenXR grip pose's forward (−Z), so an uncorrected
+/// controller can appear to point the wrong way. `.meta` applies the flip that matches Touch.
+enum ControllerOrientationLayout: String, CaseIterable, Sendable {
+    case khronos
+    case meta
+
+    var correction: simd_quatf {
+        switch self {
+        case .khronos:
+            return simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) // identity (raw hand frame)
+        case .meta:
+            return simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0)) // 180° yaw flip
+        }
+    }
+}
+
 struct VisionHandState: Sendable {
     let wristPosition: SIMD3<Float>
     let wristRotation: simd_quatf
@@ -49,7 +66,30 @@ final class VisionTrackingManager: @unchecked Sendable {
     private var accessoryTrackingProvider: Any?
     private var lastHeadOrientation: simd_quatf?
 
+    // Controller emulation from hands / gamepad. All access is on `queue` (with sampleTracking).
+    private var gestureEmulator = HandGestureEmulator()
+    private var gestureEmulationEnabled = false
+    // Compatibility mode: hand poses + a connected gamepad (e.g. Xbox) emulate Touch controllers.
+    // Takes priority over gesture emulation when a gamepad is present.
+    private var controllerCompatibilityEnabled = false
+    private var controllerLayout: ControllerOrientationLayout = .meta
+
     var onTrackingUpdate: (@Sendable (VisionTrackingSnapshot) -> Void)?
+
+    /// Enable hand-gesture controller emulation (pinch/curl → buttons/trigger/grip, wrist → pose).
+    func setGestureEmulationEnabled(_ enabled: Bool) {
+        queue.async { [self] in gestureEmulationEnabled = enabled }
+    }
+
+    /// Enable hands+gamepad compatibility mode (hand pose + gamepad buttons emulate Touch).
+    func setControllerCompatibilityEnabled(_ enabled: Bool) {
+        queue.async { [self] in controllerCompatibilityEnabled = enabled }
+    }
+
+    /// Select the emulated-controller orientation layout.
+    func setControllerLayout(_ layout: ControllerOrientationLayout) {
+        queue.async { [self] in controllerLayout = layout }
+    }
 
     func start() {
         queue.async { [self] in
@@ -101,6 +141,7 @@ final class VisionTrackingManager: @unchecked Sendable {
         session.stop()
         accessoryTrackingProvider = nil
         lastHeadOrientation = nil
+        gestureEmulator.reset()
     }
 
     private func runSession() async {
@@ -230,7 +271,94 @@ final class VisionTrackingManager: @unchecked Sendable {
             }
         }
 
+        // Fill controllers for hands without a physical spatial controller. Compatibility mode
+        // (hand pose + gamepad buttons) wins when a gamepad is connected; otherwise fall back to
+        // gesture emulation. The hand skeleton is still sent alongside.
+        let compatGamepad = controllerCompatibilityEnabled ? connectedGamepad() : nil
+        if let compatGamepad {
+            if snapshot.leftController == nil, let leftHand = snapshot.leftHand {
+                snapshot.leftController = applyLayout(makeCompatibilityController(hand: leftHand, gamepad: compatGamepad, isLeft: true))
+            }
+            if snapshot.rightController == nil, let rightHand = snapshot.rightHand {
+                snapshot.rightController = applyLayout(makeCompatibilityController(hand: rightHand, gamepad: compatGamepad, isLeft: false))
+            }
+        } else if gestureEmulationEnabled {
+            if snapshot.leftController == nil, let leftHand = snapshot.leftHand {
+                snapshot.leftController = applyLayout(gestureEmulator.emulate(from: leftHand, chirality: .left))
+            }
+            if snapshot.rightController == nil, let rightHand = snapshot.rightHand {
+                snapshot.rightController = applyLayout(gestureEmulator.emulate(from: rightHand, chirality: .right))
+            }
+        }
+
         onTrackingUpdate?(snapshot)
+    }
+
+    /// Applies the selected orientation-layout correction to an emulated controller's pose.
+    private func applyLayout(_ state: VisionControllerState) -> VisionControllerState {
+        let corrected = simd_normalize(state.orientation * controllerLayout.correction)
+        return VisionControllerState(
+            position: state.position,
+            orientation: corrected,
+            buttonState: state.buttonState,
+            trigger: state.trigger,
+            grip: state.grip,
+            thumbstick: state.thumbstick
+        )
+    }
+
+    /// First connected non-spatial gamepad (e.g. an Xbox controller) for compatibility mode.
+    /// Spatial controllers are skipped — they are handled by the accessory-tracking path.
+    private func connectedGamepad() -> GCExtendedGamepad? {
+        for controller in GCController.controllers() {
+            if #available(visionOS 26.0, *),
+               controller.productCategory == GCProductCategorySpatialController {
+                continue
+            }
+            if let gamepad = controller.extendedGamepad {
+                return gamepad
+            }
+        }
+        return nil
+    }
+
+    /// Emulates one Touch controller: 6DOF pose from the hand wrist, inputs from the gamepad.
+    /// Left gets X/Y + menu + left stick/trigger/bumper; right gets A/B + right stick/trigger/bumper.
+    private func makeCompatibilityController(hand: VisionHandState,
+                                             gamepad: GCExtendedGamepad,
+                                             isLeft: Bool) -> VisionControllerState {
+        var buttons: UInt32 = 0
+        let trigger: Float
+        let grip: Float
+        let thumbstick: SIMD2<Float>
+
+        if isLeft {
+            if gamepad.buttonX.isPressed { buttons |= ButtonFlags.x }
+            if gamepad.buttonY.isPressed { buttons |= ButtonFlags.y }
+            if gamepad.buttonMenu.isPressed || gamepad.buttonOptions?.isPressed == true {
+                buttons |= ButtonFlags.menu
+            }
+            trigger = gamepad.leftTrigger.value
+            grip = gamepad.leftShoulder.value
+            thumbstick = SIMD2<Float>(gamepad.leftThumbstick.xAxis.value,
+                                      gamepad.leftThumbstick.yAxis.value)
+        } else {
+            if gamepad.buttonA.isPressed { buttons |= ButtonFlags.a }
+            if gamepad.buttonB.isPressed { buttons |= ButtonFlags.b }
+            trigger = gamepad.rightTrigger.value
+            grip = gamepad.rightShoulder.value
+            thumbstick = SIMD2<Float>(gamepad.rightThumbstick.xAxis.value,
+                                      gamepad.rightThumbstick.yAxis.value)
+        }
+
+        return VisionControllerState(
+            position: hand.wristPosition,
+            orientation: hand.wristRotation,
+            buttonState: buttons,
+            trigger: trigger,
+            grip: grip,
+            thumbstick: thumbstick
+        )
     }
 
     private func stabilized(_ orientation: simd_quatf, previous: simd_quatf?) -> simd_quatf {

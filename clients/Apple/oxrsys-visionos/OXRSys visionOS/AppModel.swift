@@ -221,6 +221,16 @@ final class AppModel {
     var stats = StreamStats()
     var showStats = true
 
+    /// Emulate VR controllers from hand tracking (pinch/curl gestures) and, when an Xbox-style
+    /// gamepad is connected, from hand pose + gamepad buttons — so controller-only PCVR games are
+    /// playable without physical spatial controllers. Off by default.
+    var emulateControllers = false {
+        didSet {
+            trackingManager.setGestureEmulationEnabled(emulateControllers)
+            trackingManager.setControllerCompatibilityEnabled(emulateControllers)
+        }
+    }
+
     private let discovery = DiscoveryClient()
     private let videoReceiver = VideoReceiver()
     private let trackingSender = TrackingSender()

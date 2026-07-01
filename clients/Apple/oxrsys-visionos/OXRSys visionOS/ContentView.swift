@@ -34,6 +34,8 @@ struct ContentView: View {
 
             Toggle("Show hands", isOn: $appModel.showHandsInImmersive)
 
+            Toggle("Emulate controllers (hands + gamepad)", isOn: $appModel.emulateControllers)
+
             Toggle("Keep window in immersive", isOn: $appModel.keepControlWindowVisibleInImmersive)
                 .disabled(appModel.connectionState == .streaming)
         }
