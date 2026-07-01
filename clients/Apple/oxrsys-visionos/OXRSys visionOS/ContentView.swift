@@ -34,10 +34,15 @@ struct ContentView: View {
 
             Toggle("Show hands", isOn: $appModel.showHandsInImmersive)
 
-            Toggle("Emulate controllers (hands + gamepad)", isOn: $appModel.emulateControllers)
-
             Toggle("Keep window in immersive", isOn: $appModel.keepControlWindowVisibleInImmersive)
                 .disabled(appModel.connectionState == .streaming)
+
+            DisclosureGroup("Developer") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Emulate controllers (hands + gamepad)", isOn: $appModel.emulateControllers)
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(20)
         .frame(width: 320)
