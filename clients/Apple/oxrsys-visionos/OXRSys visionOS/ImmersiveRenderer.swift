@@ -181,9 +181,11 @@ actor ImmersiveRenderer {
         renderPassDescriptor.colorAttachments[0].storeAction = .store
         renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         // visionOS reprojects each presented frame using the depth buffer; with no valid depth
-        // the device drops every frame (black) while the simulator does not. Clear the depth to
-        // a fixed head-locked distance so the compositor has a real surface to reproject.
-        let clip = drawable.computeProjection(viewIndex: 0) * SIMD4<Float>(0, 0, -2.0, 1)
+        // the device drops every frame (black) while the simulator does not. Clear the depth to a
+        // far (≈infinity) head-locked distance: the compositor's positional reprojection then
+        // applies ~no parallax, leaving clean rotation-only warp (matching our shader) and avoiding
+        // the forward-motion "swim/zoom" a near flat-depth plane produces on a streamed 2D frame.
+        let clip = drawable.computeProjection(viewIndex: 0) * SIMD4<Float>(0, 0, -1000.0, 1)
         renderPassDescriptor.depthAttachment.texture = drawable.depthTextures[0]
         renderPassDescriptor.depthAttachment.loadAction = .clear
         renderPassDescriptor.depthAttachment.storeAction = .store

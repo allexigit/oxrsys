@@ -25,6 +25,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Changed
 
+- Cleared the visionOS depth buffer to a far (≈infinity) distance instead of a near 2 m plane, so the compositor's positional reprojection adds ~no parallax to the streamed 2D frame — removing the forward-motion "swim/zoom" and leaving clean rotation-only reprojection.
 - Reduced visionOS present latency by ~1 frame by lowering the immersive renderer's in-flight buffer count from 3 to 2; the CompositorServices frame clock is the pacer, so the third buffer only added latency for a video blit.
 - Reduced visionOS decode latency by preferring the VideoToolbox hardware decoder and enabling real-time decode, and by splitting received NAL units in place instead of copying each whole frame into an array on the decode path.
 - Corrected visionOS streamed-video color conversion by defining a BT.709 SDR encoder contract and expanding VideoToolbox limited-range YCbCr with exact 8-bit and 10-bit code ranges before RGB conversion, restoring proper black levels and color balance without changing stream bandwidth.
