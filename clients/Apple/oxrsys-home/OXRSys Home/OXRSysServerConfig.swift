@@ -12,6 +12,7 @@ struct OXRSysServerConfig: Equatable {
     var refreshRateHz = 72
     var resolutionScale = 0.75
     var dynamicResolutionMinScale = 0.50
+    var renderDevice: RenderDeviceSetting = .quest3
     var keyframeIntervalSec = 2
     var videoCodec: VideoCodecSetting = .h265
     var encoderPreset: EncoderPreset = .balanced
@@ -56,6 +57,11 @@ struct OXRSysServerConfig: Equatable {
     # Minimum encoded-resolution multiplier used only when abr_mode = "full"
     # and a reliable USB TCP headset client supports live stream reconfiguration.
     dynamic_resolution_min_scale = 0.50
+
+    # Target headset for the per-eye render resolution: "quest2", "quest3", or "avp".
+    # Sets the resolution the runtime renders at (quest2=1440x1584, quest3=1512x1680,
+    # avp=3024x3360 per eye). Use resolution_scale to trim how much of it is streamed.
+    render_device = "quest3"
 
     # Keyframe interval in seconds (1-10). Higher = less bandwidth spikes, slower recovery.
     # Default 2 is a good balance. Use 1 for lossy WiFi, 5+ for USB.
@@ -139,6 +145,9 @@ struct OXRSysServerConfig: Equatable {
         if let value = doubleValue("dynamic_resolution_min_scale", in: text), value >= 0.25, value <= 1.0 {
             config.dynamicResolutionMinScale = value
         }
+        if let value = stringValue("render_device", in: text), let device = RenderDeviceSetting(rawValue: value) {
+            config.renderDevice = device
+        }
         if let value = intValue("keyframe_interval_sec", in: text), (1...10).contains(value) {
             config.keyframeIntervalSec = value
         }
@@ -215,6 +224,7 @@ struct OXRSysServerConfig: Equatable {
                 ("refresh_rate_hz", "\(refreshRateHz)"),
                 ("resolution_scale", decimalString(resolutionScale)),
                 ("dynamic_resolution_min_scale", decimalString(dynamicResolutionMinScale)),
+                ("render_device", "\"\(renderDevice.rawValue)\""),
                 ("keyframe_interval_sec", "\(keyframeIntervalSec)"),
                 ("video_codec", "\"\(videoCodec.rawValue)\""),
                 ("encoder_preset", "\"\(encoderPreset.rawValue)\""),

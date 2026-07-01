@@ -101,6 +101,7 @@ private:
     QSlider* keyframeSlider_ = nullptr;
     QLabel* keyframeValueLabel_ = nullptr;
     QComboBox* refreshRateCombo_ = nullptr;
+    QComboBox* renderDeviceCombo_ = nullptr;
     QComboBox* encoderPresetCombo_ = nullptr;
     QComboBox* videoCodecCombo_ = nullptr;
     QComboBox* foveatedEncodingPresetCombo_ = nullptr;

@@ -354,6 +354,14 @@ ConfigValues ParseConfigToml(std::istream& input, const ConfigValues& defaults)
                     values.dynamicResolutionMinScale = val;
                 }
             }
+            else if (key == "render_device")
+            {
+                value = ParseString(value);
+                if (value == "quest2" || value == "quest3" || value == "avp")
+                {
+                    values.renderDevice = value;
+                }
+            }
             else if (key == "keyframe_interval_sec")
             {
                 int val = std::stoi(value);
@@ -564,13 +572,14 @@ bool Config::ReloadIfChangedLocked(bool force)
     if (!force)
     {
         spdlog::info(
-            "OXRSys: Reloaded config from {} (runtime_enabled={} bitrate={}Mbps fov={} refresh={}Hz res_scale={:.2f} dyn_min={:.2f} keyframe={}s codec={} preset={} transport={} ffe={} client_ffr={} upscaling={} reprojection={} abr={} passthrough={} occlusion={} spatial={}/{}/{}/{} audio={} quest_logcat={})",
+            "OXRSys: Reloaded config from {} (runtime_enabled={} bitrate={}Mbps fov={} refresh={}Hz res_scale={:.2f} render_device={} dyn_min={:.2f} keyframe={}s codec={} preset={} transport={} ffe={} client_ffr={} upscaling={} reprojection={} abr={} passthrough={} occlusion={} spatial={}/{}/{}/{} audio={} quest_logcat={})",
             configFilePath,
             newValues.runtimeEnabled,
             newValues.bitrateMbps,
             newValues.fovDegrees,
             newValues.refreshRateHz,
             newValues.resolutionScale,
+            newValues.renderDevice,
             newValues.dynamicResolutionMinScale,
             newValues.keyframeIntervalSec,
             newValues.videoCodec,
@@ -605,6 +614,38 @@ void Config::RefreshIfNeeded()
     }
     lastReloadCheck_ = now;
     ReloadIfChangedLocked(false);
+}
+
+namespace
+{
+struct EyeResolution
+{
+    uint32_t width;
+    uint32_t height;
+};
+
+// Per-eye base render resolution for each supported target headset. The render scale is applied
+// on top of this; the device choice sets the resolution, the scale sets how much of it we stream.
+EyeResolution DeviceBaseEyeResolution(const std::string& device)
+{
+    if (device == "quest2")
+    {
+        return {1440, 1584};
+    }
+    if (device == "avp")
+    {
+        return {3024, 3360};
+    }
+    // "quest3" and any unknown value fall back to the default base.
+    return {1512, 1680};
+}
+} // namespace
+
+void RenderBaseEyeResolution(uint32_t& width, uint32_t& height)
+{
+    const EyeResolution base = DeviceBaseEyeResolution(Config::Get().GetValues().renderDevice);
+    width = base.width;
+    height = base.height;
 }
 
 ConfigValues Config::GetValues()

@@ -6,6 +6,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Added
 
+- Added per-device render-resolution presets: `render_device = "quest2" | "quest3" | "avp"` selects the per-eye render resolution the runtime advertises to the app (1440x1584 / 1512x1680 / 3024x3360), with matching SwiftUI Home and Qt Home controls. The default (`quest3`) matches the previous fixed 1512x1680; use the existing `resolution_scale` to trim how much of it is encoded and streamed.
 - Added negotiated 10-bit H.265 streaming: the visionOS client advertises HEVC Main10 decode support, the runtime requests Main10 only when `streaming.encoder_10bit = true`, the selected codec is H.265, and the connected client supports it, and SwiftUI Home and Qt Home expose the setting. H.264 and legacy clients remain on the 8-bit path.
 - Improved the visionOS control window with explicit discovery and connection states, optional automatic immersive entry, immersive re-entry and disconnect actions, configurable window visibility while immersed, and visible-hands control.
 - Added runtime video codec selection with `streaming.video_codec = "h265"`, `"h264"`, or `"auto"`, plus matching SwiftUI Home and Qt Home controls.

@@ -81,7 +81,7 @@ public:
     void SetDebugUtilsObjectName(XrObjectType objectType, uint64_t objectHandle, const char* objectName);
     std::string GetDebugUtilsObjectName(XrObjectType objectType, uint64_t objectHandle) const;
 
-    static constexpr uint32_t EyeWidth = 1512;
+    static constexpr uint32_t EyeWidth = 1512;   // Quest 3 base per-eye (default device)
     static constexpr uint32_t EyeHeight = 1680;
 
 private:

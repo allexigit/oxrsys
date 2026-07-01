@@ -18,6 +18,7 @@ struct ServerConfig
     int refreshRateHz = 72;
     double resolutionScale = 0.75;
     double dynamicResolutionMinScale = 0.50;
+    QString renderDevice = "quest3";
     int keyframeIntervalSec = 2;
     QString videoCodec = "h265";
     QString encoderPreset = "balanced";

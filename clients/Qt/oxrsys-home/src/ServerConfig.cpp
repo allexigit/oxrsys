@@ -252,6 +252,7 @@ QString ServerConfig::defaultText()
         "refresh_rate_hz = 72\n"
         "resolution_scale = 0.75\n"
         "dynamic_resolution_min_scale = 0.50\n"
+        "render_device = \"quest3\"\n"
         "keyframe_interval_sec = 2\n"
         "video_codec = \"h265\"\n"
         "encoder_preset = \"balanced\"\n"
@@ -312,6 +313,12 @@ ServerConfig ServerConfig::parse(const QString& text)
     if (ok && dynamicResolutionMinScale >= 0.25 && dynamicResolutionMinScale <= 1.0)
     {
         config.dynamicResolutionMinScale = dynamicResolutionMinScale;
+    }
+
+    const QString renderDevice = stringValue("render_device", text);
+    if (renderDevice == "quest2" || renderDevice == "quest3" || renderDevice == "avp")
+    {
+        config.renderDevice = renderDevice;
     }
 
     const int keyframeInterval = rawValue("keyframe_interval_sec", text).toInt(&ok);
@@ -454,6 +461,7 @@ QString ServerConfig::mergedInto(const QString& currentText) const
         {"refresh_rate_hz", QString::number(refreshRateHz)},
         {"resolution_scale", decimalString(resolutionScale)},
         {"dynamic_resolution_min_scale", decimalString(dynamicResolutionMinScale)},
+        {"render_device", QString("\"%1\"").arg(renderDevice)},
         {"keyframe_interval_sec", QString::number(keyframeIntervalSec)},
         {"video_codec", QString("\"%1\"").arg(videoCodec)},
         {"encoder_preset", QString("\"%1\"").arg(encoderPreset)},

@@ -858,6 +858,10 @@ QWidget* MainWindow::buildStreamingTab()
     {
         refreshRateCombo_->addItem(QString("%1 Hz").arg(rate), rate);
     }
+    renderDeviceCombo_ = new QComboBox(configBox);
+    renderDeviceCombo_->addItem("Quest 2 (1440x1584)", "quest2");
+    renderDeviceCombo_->addItem("Quest 3 (1512x1680)", "quest3");
+    renderDeviceCombo_->addItem("Vision Pro (3024x3360)", "avp");
     encoderPresetCombo_ = new QComboBox(configBox);
     encoderPresetCombo_->addItem("Quality", "quality");
     encoderPresetCombo_->addItem("Balanced", "balanced");
@@ -886,6 +890,7 @@ QWidget* MainWindow::buildStreamingTab()
     passthroughCheckBox_ = new QCheckBox("Passthrough", configBox);
     encoder10BitCheckBox_ = new QCheckBox("10-bit HEVC", configBox);
     form->addRow("Refresh rate", refreshRateCombo_);
+    form->addRow("Render device", renderDeviceCombo_);
     form->addRow("Encoder preset", encoderPresetCombo_);
     form->addRow("Video codec", videoCodecCombo_);
     form->addRow(QString(), encoder10BitCheckBox_);
@@ -943,6 +948,7 @@ QWidget* MainWindow::buildStreamingTab()
     connect(dynamicResolutionSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(keyframeSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(refreshRateCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
+    connect(renderDeviceCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(encoderPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(videoCodecCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(encoder10BitCheckBox_, &QCheckBox::toggled, this, connectConfigChanged);
@@ -1302,6 +1308,7 @@ void MainWindow::refreshStreaming()
     dynamicResolutionSlider_->setValue(qRound(config.dynamicResolutionMinScale * 100.0));
     keyframeSlider_->setValue(config.keyframeIntervalSec);
     refreshRateCombo_->setCurrentIndex(std::max(refreshRateCombo_->findData(config.refreshRateHz), 0));
+    renderDeviceCombo_->setCurrentIndex(std::max(renderDeviceCombo_->findData(config.renderDevice), 0));
     encoderPresetCombo_->setCurrentIndex(std::max(encoderPresetCombo_->findData(config.encoderPreset), 0));
     videoCodecCombo_->setCurrentIndex(std::max(videoCodecCombo_->findData(config.videoCodec), 0));
     foveatedEncodingPresetCombo_->setCurrentIndex(
@@ -1527,6 +1534,7 @@ void MainWindow::updateConfigFromControls()
     config.resolutionScale = resolutionSlider_->value() / 100.0;
     config.dynamicResolutionMinScale = dynamicResolutionSlider_->value() / 100.0;
     config.keyframeIntervalSec = keyframeSlider_->value();
+    config.renderDevice = renderDeviceCombo_->currentData().toString();
     config.encoderPreset = encoderPresetCombo_->currentData().toString();
     config.videoCodec = videoCodecCombo_->currentData().toString();
     encoder10BitCheckBox_->setEnabled(config.videoCodec != "h264");

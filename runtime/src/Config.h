@@ -19,6 +19,7 @@ struct ConfigValues
     uint32_t refreshRateHz = 72;    // Preferred headset refresh rate
     float resolutionScale = 0.75f;  // Encode resolution multiplier (0.25-1.0)
     float dynamicResolutionMinScale = 0.50f; // Lowest ABR full-mode encode scale
+    std::string renderDevice = "quest3"; // Per-eye render resolution target: "quest2", "quest3", "avp"
     uint32_t keyframeIntervalSec = 2; // Seconds between forced keyframes
     std::string videoCodec = "h265"; // "h265", "h264", "auto"
     std::string encoderPreset = "balanced"; // "quality", "balanced", "speed"
@@ -43,6 +44,9 @@ struct ConfigValues
 };
 
 ConfigValues ParseConfigToml(std::istream& input, const ConfigValues& defaults = {});
+
+// Per-eye render resolution for the configured `render_device`, advertised to the app.
+void RenderBaseEyeResolution(uint32_t& width, uint32_t& height);
 
 /**
  * Runtime configuration loaded from the platform config directory

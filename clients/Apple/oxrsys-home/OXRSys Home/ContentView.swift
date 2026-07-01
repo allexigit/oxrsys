@@ -444,6 +444,12 @@ struct ContentView: View {
                             displayValue: String(format: "%.2f", model.serverConfig.resolutionScale)
                         )
 
+                        Picker("Render device", selection: streamingBinding(\.renderDevice)) {
+                            ForEach(RenderDeviceSetting.allCases) { device in
+                                Text(device.displayName).tag(device)
+                            }
+                        }
+
                         LabeledSlider(
                             title: "Dynamic Resolution Min",
                             value: streamingBinding(\.dynamicResolutionMinScale),
