@@ -22,6 +22,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Changed
 
+- Reduced visionOS decode latency by preferring the VideoToolbox hardware decoder and enabling real-time decode, and by splitting received NAL units in place instead of copying each whole frame into an array on the decode path.
 - Corrected visionOS streamed-video color conversion by defining a BT.709 SDR encoder contract and expanding VideoToolbox limited-range YCbCr with exact 8-bit and 10-bit code ranges before RGB conversion, restoring proper black levels and color balance without changing stream bandwidth.
 
 - Split non-Apple swapchain implementation by backend so Vulkan, Linux OpenGL, D3D11, and D3D12 resources live in separate files behind explicit platform/API guards.
@@ -33,6 +34,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Fixed
 
+- Fixed a potential visionOS black screen when the server streams 8-bit H.265 while the client requests a 10-bit decode surface, by falling back to an 8-bit output surface when 10-bit session creation is rejected; the renderer already selects its color conversion from the buffer's actual pixel format.
 - Fixed a Unity editor crash on session shutdown by invalidating stale VideoToolbox encode callbacks before the streaming server is destroyed and by catching callback exceptions inside the encoder.
 - Fixed the visionOS viewer black screen and doubled AR view by sharing one ARKit world-tracking session between the tracking manager and the immersive renderer, and clearing the drawable depth buffer so the visionOS compositor has a surface to reproject.
 - Fixed visionOS eye projection by sending the device's real per-eye FOV and IPD to the runtime, so it renders a matching frustum instead of the symmetric fallback that made the projection look wrong.

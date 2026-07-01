@@ -190,6 +190,13 @@ public final class VideoDecoder: @unchecked Sendable {
             kCVPixelBufferPixelFormatTypeKey as String: pixelFormat
         ]
 
+        // Prefer the hardware decoder — always present on Apple silicon — so a real-time stream is
+        // never paced by a software decoder. `Enable` (not `Require`) still permits a fallback
+        // rather than failing session creation on a configuration that lacks one.
+        let decoderSpec: [String: Any] = [
+            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true
+        ]
+
         var outputCallback = VTDecompressionOutputCallbackRecord(
             decompressionOutputCallback: decompressionCallback,
             decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
@@ -199,11 +206,17 @@ public final class VideoDecoder: @unchecked Sendable {
         let status = VTDecompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             formatDescription: fmt,
-            decoderSpecification: nil,
+            decoderSpecification: decoderSpec as CFDictionary,
             imageBufferAttributes: decoderAttrs as CFDictionary,
             outputCallback: &outputCallback,
             decompressionSessionOut: &newSession
         )
+
+        // Low-latency decode: tell VideoToolbox latency matters more than throughput so it does not
+        // batch or hold frames. Never combine with MaximizePowerEfficiency (undefined behavior).
+        if status == noErr, let session = newSession {
+            VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        }
         return (newSession, status)
     }
 
@@ -420,34 +433,44 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     private func splitNalUnits(_ data: Data) -> [Data] {
+        // Scan for Annex-B start codes directly over the frame's bytes instead of first copying the
+        // whole frame into a [UInt8] array. Each emitted NAL is copied out exactly once into an
+        // owned, 0-based Data — so callers can index nal[0] and param sets can be retained safely —
+        // which removes one full-frame heap copy and the per-byte bounds checking on the hot path.
+        let count = data.count
+        guard count > 0 else { return [] }
+
         var units = [Data]()
-        let bytes = [UInt8](data)
-        let count = bytes.count
-        var i = 0
-        var nalStart = -1
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var i = 0
+            var nalStart = -1
 
-        while i < count - 2 {
-            let isFourByte = (i < count - 3 && bytes[i] == 0 && bytes[i + 1] == 0 &&
-                              bytes[i + 2] == 0 && bytes[i + 3] == 1)
-            let isThreeByte = !isFourByte && (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1)
+            while i < count - 2 {
+                let isFourByte = (i < count - 3 && raw[i] == 0 && raw[i + 1] == 0 &&
+                                  raw[i + 2] == 0 && raw[i + 3] == 1)
+                let isThreeByte = !isFourByte && (raw[i] == 0 && raw[i + 1] == 0 && raw[i + 2] == 1)
 
-            if isThreeByte || isFourByte {
-                if nalStart >= 0 {
-                    units.append(Data(bytes[nalStart..<i]))
+                if isThreeByte || isFourByte {
+                    if nalStart >= 0 {
+                        units.append(Data(bytes: base + nalStart, count: i - nalStart))
+                    }
+                    let startCodeLen = isFourByte ? 4 : 3
+                    nalStart = i + startCodeLen
+                    i += startCodeLen
+                } else {
+                    i += 1
                 }
-                let startCodeLen = isFourByte ? 4 : 3
-                nalStart = i + startCodeLen
-                i += startCodeLen
-            } else {
-                i += 1
+            }
+
+            if nalStart >= 0 && nalStart < count {
+                units.append(Data(bytes: base + nalStart, count: count - nalStart))
             }
         }
 
-        if nalStart >= 0 && nalStart < count {
-            units.append(Data(bytes[nalStart..<count]))
-        }
-        if units.isEmpty && !data.isEmpty {
-            units.append(data)
+        // No start codes found → treat the whole buffer as a single NAL.
+        if units.isEmpty {
+            return [data]
         }
         return units
     }
