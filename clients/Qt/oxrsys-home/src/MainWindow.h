@@ -55,6 +55,7 @@ private:
     void chooseCustomAdbExecutable();
     void openSimulatorWindow();
     void updateConfigFromControls();
+    void showRuntimeSetupGuidanceIfNeeded();
 
     HomeModel* model_ = nullptr;
     QTabWidget* tabs_ = nullptr;
@@ -101,6 +102,7 @@ private:
     QLabel* keyframeValueLabel_ = nullptr;
     QComboBox* refreshRateCombo_ = nullptr;
     QComboBox* encoderPresetCombo_ = nullptr;
+    QComboBox* videoCodecCombo_ = nullptr;
     QComboBox* foveatedEncodingPresetCombo_ = nullptr;
     QComboBox* clientFoveationPresetCombo_ = nullptr;
     QComboBox* clientReprojectionCombo_ = nullptr;
@@ -136,4 +138,5 @@ private:
     RuntimeStatsChart* pipelineChart_ = nullptr;
     RuntimeStatsChart* encodeChart_ = nullptr;
     QPointer<QMainWindow> simulatorWindow_;
+    bool runtimeSetupGuidancePresented_ = false;
 };
