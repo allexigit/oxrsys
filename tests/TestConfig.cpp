@@ -22,6 +22,7 @@ refresh_rate_hz = 120
 keyframe_interval_sec = 4
 video_codec = "h264"
 encoder_preset = "quality"
+encoder_10bit = true
 foveated_encoding_preset = "medium"
 client_foveation_preset = "high"
 client_upscaling = true
@@ -53,6 +54,7 @@ quest_logcat = yes
     CHECK(values.keyframeIntervalSec == 4);
     CHECK(values.videoCodec == "h264");
     CHECK(values.encoderPreset == "quality");
+    CHECK(values.encoder10Bit == true);
     CHECK(values.foveatedEncodingPreset == "medium");
     CHECK(values.clientFoveationPreset == "high");
     CHECK(values.clientUpscaling == true);

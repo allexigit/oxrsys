@@ -66,6 +66,8 @@ public:
                     oxr::protocol::VideoCodec codec);
     void Shutdown();
     void SetFoveationSettings(const FoveationSettings& settings) { foveationSettings_ = settings; }
+    // Applies before Initialize(); only the H.265 VideoToolbox path supports Main10.
+    void SetTenBitEncoding(bool enabled) { tenBit_ = enabled; }
     static bool SupportsFoveatedEncoding(const GraphicsContext& graphicsContext);
 
     // Encode one backend-native texture/image source.
@@ -145,6 +147,7 @@ private:
     uint32_t bitrateMbps_ = 50;
     oxr::protocol::VideoCodec codec_ = oxr::protocol::VideoCodec::H265;
     FoveationSettings foveationSettings_ = {};
+    bool tenBit_ = false;
     uint32_t frameCount_ = 0;
     std::atomic<bool> forceKeyframe_{false};
     std::atomic<bool> shuttingDown_{false};

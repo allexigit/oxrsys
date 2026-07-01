@@ -288,6 +288,7 @@ struct HomeLauncherTests {
         transport = "usb_adb"
         refresh_rate_hz = 120
         video_codec = "h264"
+        encoder_10bit = true
         foveated_encoding_preset = "medium"
         client_foveation_preset = "high"
         client_upscaling = true
@@ -307,6 +308,7 @@ struct HomeLauncherTests {
         try expect(parsed.transport == .usbAdb, "Expected USB ADB transport parse")
         try expect(parsed.refreshRateHz == 120, "Expected refresh parse")
         try expect(parsed.videoCodec == .h264, "Expected codec parse")
+        try expect(parsed.encoder10Bit, "Expected 10-bit encoder parse")
         try expect(parsed.foveatedEncodingPreset == .medium, "Expected foveated encoding parse")
         try expect(parsed.clientFoveationPreset == .high, "Expected client foveation parse")
         try expect(parsed.clientUpscaling == true, "Expected client upscaling parse")
@@ -325,6 +327,7 @@ struct HomeLauncherTests {
         try expect(merged.contains("transport = \"usb_adb\""), "Expected USB ADB transport serialization")
         try expect(merged.contains("refresh_rate_hz = 120"), "Expected refresh serialization")
         try expect(merged.contains("video_codec = \"h264\""), "Expected codec serialization")
+        try expect(merged.contains("encoder_10bit = true"), "Expected 10-bit encoder serialization")
         try expect(merged.contains("foveated_encoding_preset = \"medium\""), "Expected FFE serialization")
         try expect(merged.contains("client_foveation_preset = \"high\""), "Expected FFR serialization")
         try expect(merged.contains("client_upscaling = true"), "Expected upscaling serialization")

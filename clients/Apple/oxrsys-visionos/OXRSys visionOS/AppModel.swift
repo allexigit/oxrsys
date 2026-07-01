@@ -367,6 +367,7 @@ final class AppModel {
 
         let keyframeErrorThreshold = keyframeErrorThreshold
         let keyframeRequestCooldownNs = keyframeRequestCooldownNs
+        decoder.setPrefer10Bit(true)
         decoder.configure { [weak self] pixelBuffer, presentationTime in
             guard let self else { return }
             self.keyframeRecoveryState.noteDecodedFrame()
@@ -419,7 +420,8 @@ final class AppModel {
         discovery.sendConnect(
             to: connectionServer,
             deviceName: "OXRSys visionOS",
-            refreshRateHz: UInt32(refreshRateHz)
+            refreshRateHz: UInt32(refreshRateHz),
+            clientCapabilities: ClientCapabilityFlags.tenBitEncoding
         )
         trackingSender.connect(serverIP: serverAddress)
         controlChannel.connect(serverIP: serverAddress)

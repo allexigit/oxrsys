@@ -72,6 +72,7 @@ void testServerConfigRoundTrip()
         refresh_rate_hz = 120
         video_codec = "h264"
         encoder_preset = "speed"
+        encoder_10bit = true
         foveated_encoding_preset = "medium"
         client_foveation_preset = "high"
         client_upscaling = true
@@ -98,6 +99,7 @@ void testServerConfigRoundTrip()
     expect(parsed.refreshRateHz == 120, "Expected refresh parse");
     expect(parsed.videoCodec == "h264", "Expected codec parse");
     expect(parsed.encoderPreset == "speed", "Expected preset parse");
+    expect(parsed.encoder10Bit, "Expected 10-bit encoder parse");
     expect(parsed.foveatedEncodingPreset == "medium", "Expected FFE parse");
     expect(parsed.clientFoveationPreset == "high", "Expected client foveation parse");
     expect(parsed.clientUpscaling, "Expected upscaling parse");
@@ -117,6 +119,7 @@ void testServerConfigRoundTrip()
     expect(merged.contains("bitrate_mbps = 85"), "Expected bitrate serialization");
     expect(merged.contains("refresh_rate_hz = 120"), "Expected refresh serialization");
     expect(merged.contains("video_codec = \"h264\""), "Expected codec serialization");
+    expect(merged.contains("encoder_10bit = true"), "Expected 10-bit encoder serialization");
     expect(!merged.contains("fov_degrees"), "Expected simulator FOV to stay out of Home config");
     expect(merged.contains("foveated_encoding_preset = \"medium\""), "Expected FFE serialization");
     expect(merged.contains("client_foveation_preset = \"high\""), "Expected FFR serialization");

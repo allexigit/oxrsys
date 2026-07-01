@@ -6,6 +6,8 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Added
 
+- Added negotiated 10-bit H.265 streaming: the visionOS client advertises HEVC Main10 decode support, the runtime requests Main10 only when `streaming.encoder_10bit = true`, the selected codec is H.265, and the connected client supports it, and SwiftUI Home and Qt Home expose the setting. H.264 and legacy clients remain on the 8-bit path.
+- Improved the visionOS control window with explicit discovery and connection states, optional automatic immersive entry, immersive re-entry and disconnect actions, configurable window visibility while immersed, and visible-hands control.
 - Added runtime video codec selection with `streaming.video_codec = "h265"`, `"h264"`, or `"auto"`, plus matching SwiftUI Home and Qt Home controls.
 - Added conservative codec capability negotiation through `ClientConnect.supportedCodecs`, keeping legacy clients H.265-only while allowing H.264-capable clients to opt in.
 - Added H.264 decode support to the Android VR client and shared Apple streaming path, with Android, Apple simulator, and visionOS clients advertising H.264/H.265 while keeping H.265 preferred.

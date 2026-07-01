@@ -255,6 +255,7 @@ QString ServerConfig::defaultText()
         "keyframe_interval_sec = 2\n"
         "video_codec = \"h265\"\n"
         "encoder_preset = \"balanced\"\n"
+        "encoder_10bit = false\n"
         "transport = \"auto\"\n"
         "foveated_encoding_preset = \"off\"\n"
         "client_foveation_preset = \"auto\"\n"
@@ -323,6 +324,12 @@ ServerConfig ServerConfig::parse(const QString& text)
     if (preset == "quality" || preset == "balanced" || preset == "speed")
     {
         config.encoderPreset = preset;
+    }
+
+    const bool encoder10Bit = boolValue("encoder_10bit", text, &ok);
+    if (ok)
+    {
+        config.encoder10Bit = encoder10Bit;
     }
 
     const QString videoCodec = stringValue("video_codec", text);
@@ -450,6 +457,7 @@ QString ServerConfig::mergedInto(const QString& currentText) const
         {"keyframe_interval_sec", QString::number(keyframeIntervalSec)},
         {"video_codec", QString("\"%1\"").arg(videoCodec)},
         {"encoder_preset", QString("\"%1\"").arg(encoderPreset)},
+        {"encoder_10bit", boolString(encoder10Bit)},
         {"transport", QString("\"%1\"").arg(transport)},
         {"foveated_encoding_preset", QString("\"%1\"").arg(foveatedEncodingPreset)},
         {"client_foveation_preset", QString("\"%1\"").arg(clientFoveationPreset)},

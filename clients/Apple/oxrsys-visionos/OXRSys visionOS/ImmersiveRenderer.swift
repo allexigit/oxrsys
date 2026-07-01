@@ -199,11 +199,16 @@ actor ImmersiveRenderer {
 
         encoder.setFragmentBytes(&reprojData, length: MemoryLayout<ReprojData>.stride * reprojData.count, index: 0)
 
-        if let pixelBuffer = frame.pixelBuffer,
-           let luma = makeTexture(from: pixelBuffer, plane: 0, format: .r8Unorm),
-           let chroma = makeTexture(from: pixelBuffer, plane: 1, format: .rg8Unorm) {
-            encoder.setFragmentTexture(luma, index: 0)
-            encoder.setFragmentTexture(chroma, index: 1)
+        if let pixelBuffer = frame.pixelBuffer {
+            let is10Bit = CVPixelBufferGetPixelFormatType(pixelBuffer) ==
+                kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            let lumaFormat: MTLPixelFormat = is10Bit ? .r16Unorm : .r8Unorm
+            let chromaFormat: MTLPixelFormat = is10Bit ? .rg16Unorm : .rg8Unorm
+            if let luma = makeTexture(from: pixelBuffer, plane: 0, format: lumaFormat),
+               let chroma = makeTexture(from: pixelBuffer, plane: 1, format: chromaFormat) {
+                encoder.setFragmentTexture(luma, index: 0)
+                encoder.setFragmentTexture(chroma, index: 1)
+            }
         }
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

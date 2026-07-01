@@ -110,6 +110,7 @@ private:
     QComboBox* occlusionModeCombo_ = nullptr;
     QComboBox* configTransportCombo_ = nullptr;
     QCheckBox* passthroughCheckBox_ = nullptr;
+    QCheckBox* encoder10BitCheckBox_ = nullptr;
     QCheckBox* spatialEnabledCheckBox_ = nullptr;
     QCheckBox* spatialAnchorsCheckBox_ = nullptr;
     QCheckBox* spatialSceneCheckBox_ = nullptr;

@@ -477,6 +477,9 @@ struct ContentView: View {
                             }
                         }
 
+                        Toggle("10-bit HEVC", isOn: streamingBinding(\.encoder10Bit))
+                            .disabled(model.serverConfig.videoCodec == .h264)
+
                         Picker("Foveated encoding", selection: streamingBinding(\.foveatedEncodingPreset)) {
                             ForEach(FoveationPresetSetting.allCases) { preset in
                                 Text(preset.displayName).tag(preset)

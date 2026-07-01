@@ -43,6 +43,10 @@ video_codec = "h265"
 # quality  = best visual quality, slightly higher latency
 encoder_preset = "balanced"
 
+# Encode HEVC Main10 for H.265 clients that advertise 10-bit decode support.
+# H.264 and clients without the capability continue to receive 8-bit video.
+encoder_10bit = false
+
 # Streaming transport: "auto" tries USB ADB reverse and WiFi, "wifi" disables USB TCP
 # listeners, and "usb_adb" disables WiFi discovery fallback.
 transport = "auto"

@@ -21,6 +21,7 @@ struct ServerConfig
     int keyframeIntervalSec = 2;
     QString videoCodec = "h265";
     QString encoderPreset = "balanced";
+    bool encoder10Bit = false;
     QString transport = "auto";
     QString foveatedEncodingPreset = "off";
     QString clientFoveationPreset = "auto";

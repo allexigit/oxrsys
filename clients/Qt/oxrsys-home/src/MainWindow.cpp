@@ -884,9 +884,11 @@ QWidget* MainWindow::buildStreamingTab()
     occlusionModeCombo_->addItem("Scene Mesh", "scene_mesh");
     occlusionModeCombo_->addItem("Environment Depth", "environment_depth");
     passthroughCheckBox_ = new QCheckBox("Passthrough", configBox);
+    encoder10BitCheckBox_ = new QCheckBox("10-bit HEVC", configBox);
     form->addRow("Refresh rate", refreshRateCombo_);
     form->addRow("Encoder preset", encoderPresetCombo_);
     form->addRow("Video codec", videoCodecCombo_);
+    form->addRow(QString(), encoder10BitCheckBox_);
     form->addRow("Foveated encoding", foveatedEncodingPresetCombo_);
     form->addRow("Transport", configTransportCombo_);
     form->addRow("ABR mode", abrModeCombo_);
@@ -943,6 +945,7 @@ QWidget* MainWindow::buildStreamingTab()
     connect(refreshRateCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(encoderPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(videoCodecCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
+    connect(encoder10BitCheckBox_, &QCheckBox::toggled, this, connectConfigChanged);
     connect(foveatedEncodingPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(clientFoveationPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(clientReprojectionCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
@@ -1270,7 +1273,7 @@ void MainWindow::refreshStreaming()
     const ServerConfig& config = model_->serverConfig();
     const QList<QWidget*> controls = {
         runtimeEnabledCheckBox_, fileLoggingCheckBox_, questLogcatCheckBox_,
-        clientUpscalingCheckBox_, headsetAudioCheckBox_, passthroughCheckBox_, spatialEnabledCheckBox_,
+        clientUpscalingCheckBox_, headsetAudioCheckBox_, passthroughCheckBox_, encoder10BitCheckBox_, spatialEnabledCheckBox_,
         spatialAnchorsCheckBox_, spatialSceneCheckBox_, spatialPersistenceCheckBox_,
         bitrateSlider_, resolutionSlider_, dynamicResolutionSlider_, keyframeSlider_,
         refreshRateCombo_, encoderPresetCombo_, videoCodecCombo_, foveatedEncodingPresetCombo_,
@@ -1288,6 +1291,8 @@ void MainWindow::refreshStreaming()
     clientUpscalingCheckBox_->setChecked(config.clientUpscaling);
     headsetAudioCheckBox_->setChecked(config.headsetAudio);
     passthroughCheckBox_->setChecked(config.passthroughEnabled);
+    encoder10BitCheckBox_->setChecked(config.encoder10Bit);
+    encoder10BitCheckBox_->setEnabled(config.videoCodec != "h264");
     spatialEnabledCheckBox_->setChecked(config.spatialEnabled);
     spatialAnchorsCheckBox_->setChecked(config.spatialAnchors);
     spatialSceneCheckBox_->setChecked(config.spatialScene);
@@ -1512,6 +1517,7 @@ void MainWindow::updateConfigFromControls()
     config.clientUpscaling = clientUpscalingCheckBox_->isChecked();
     config.headsetAudio = headsetAudioCheckBox_->isChecked();
     config.passthroughEnabled = passthroughCheckBox_->isChecked();
+    config.encoder10Bit = encoder10BitCheckBox_->isChecked();
     config.spatialEnabled = spatialEnabledCheckBox_->isChecked();
     config.spatialAnchors = spatialAnchorsCheckBox_->isChecked();
     config.spatialScene = spatialSceneCheckBox_->isChecked();
@@ -1523,6 +1529,7 @@ void MainWindow::updateConfigFromControls()
     config.keyframeIntervalSec = keyframeSlider_->value();
     config.encoderPreset = encoderPresetCombo_->currentData().toString();
     config.videoCodec = videoCodecCombo_->currentData().toString();
+    encoder10BitCheckBox_->setEnabled(config.videoCodec != "h264");
     config.foveatedEncodingPreset = foveatedEncodingPresetCombo_->currentData().toString();
     config.clientFoveationPreset = clientFoveationPresetCombo_->currentData().toString();
     config.clientReprojection = clientReprojectionCombo_->currentData().toString();

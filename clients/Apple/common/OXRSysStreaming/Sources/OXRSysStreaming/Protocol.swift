@@ -119,6 +119,7 @@ public struct ClientCapabilityFlags {
     public static let depthOcclusion: UInt32 = 0x00000080
     public static let spatialEntity: UInt32 = 0x00000100
     public static let sceneCapture: UInt32 = 0x00000200
+    public static let tenBitEncoding: UInt32 = 0x00000400
 }
 
 public enum FoveationPreset: UInt32, Sendable {

@@ -10,7 +10,7 @@ launching, runtime selection, runtime configuration, and runtime registration wo
 **Current state:** Metal/core runtime, Vulkan interop, Linux Vulkan/FFmpeg streaming,
 first-pass Linux OpenGL GLX backend, Windows Vulkan + Direct3D 11/12 runtime backends,
 typed internal graphics/frame plumbing, release-time Metal streaming snapshots,
-runtime-selectable H.264/H.265 video codecs,
+runtime-selectable H.264/H.265 video codecs and negotiated H.265 Main10 streaming,
 portable platform/socket helpers,
 controller and hand input paths, loader-backed
 runtime tests, `XR_EXT_conformance_automation`, `XR_EXT_hand_interaction`, and `XR_EXT_debug_utils`
@@ -107,6 +107,7 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
 - Quest USB TCP sockets must keep bounded send behavior; failed video sends must clear stale TCP dispatch state and must not block the encoded-frame sender, VideoToolbox callback, or `Session::EndFrame()`.
 - Encoded video dispatch is latest-frame-oriented and bounded; stale queued frames may be dropped instead of building latency when the transport cannot keep up.
 - Video codec negotiation must stay conservative: `ClientConnect.supportedCodecs = 0` means a legacy H.265-only client, H.265 remains the default, and H.264 must only be selected for clients that explicitly advertise H.264 support.
+- 10-bit streaming is HEVC Main10 only: enable it only for H.265 when `encoder_10bit` is configured and the client advertises `CLIENT_CAPABILITY_TEN_BIT_ENCODING`; H.264 and legacy clients must remain 8-bit.
 - Runtime-managed Quest logcat capture is optional and disabled by default; if enabled, clearing the headset log before capture must remain bounded/best-effort and must not block runtime startup or tests.
 - Headset refresh rate is selected by the server config/Home, requested by the Quest client through `XR_FB_display_refresh_rate`, and negotiated back from the active client rate.
 - The Quest Android client still uses the build-time `OXRSYS_PREFERRED_DISPLAY_REFRESH_RATE_HZ` value as a fallback before a server is discovered.

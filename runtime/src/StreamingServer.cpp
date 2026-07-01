@@ -680,6 +680,7 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
         streamLayout_.streamConfigSequence = 0;
     }
     clientFoveatedEncodingActive_.store(false);
+    tenBitEncodingActive_.store(false);
     clientSupportsFoveatedEncoding_.store(false);
     clientSupportsStreamReconfigure_.store(false);
     clientSupportsMixedRealityPassthrough_.store(false);
@@ -1744,6 +1745,11 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
             clientFoveatedEncodingActive_.store(useFoveatedEncoding);
             encoder_->SetFoveationSettings(BuildEncoderFoveationSettings(
                 useFoveatedEncoding, layout));
+            const bool useTenBit = config.encoder10Bit &&
+                selectedCodec == oxr::protocol::VideoCodec::H265 &&
+                HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_TEN_BIT_ENCODING);
+            tenBitEncodingActive_.store(useTenBit);
+            encoder_->SetTenBitEncoding(useTenBit);
             if (layoutState.foveatedEncodingActive && !clientSupportsFoveatedEncoding)
             {
                 spdlog::warn("StreamingServer: client '{}' did not advertise foveated encoding support; sending reduced normal video",
@@ -1897,6 +1903,11 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
             clientFoveatedEncodingActive_.store(useFoveatedEncoding);
             encoder_->SetFoveationSettings(BuildEncoderFoveationSettings(
                 useFoveatedEncoding, layout));
+            const bool useTenBit = config.encoder10Bit &&
+                selectedCodec == oxr::protocol::VideoCodec::H265 &&
+                HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_TEN_BIT_ENCODING);
+            tenBitEncodingActive_.store(useTenBit);
+            encoder_->SetTenBitEncoding(useTenBit);
             if (layoutState.foveatedEncodingActive && !clientSupportsFoveatedEncoding)
             {
                 spdlog::warn("StreamingServer: USB client '{}' did not advertise foveated encoding support; sending reduced normal video",
@@ -1998,6 +2009,7 @@ void StreamingServer::HandleClientDisconnect()
 
     targetRefreshRateHz_.store(refreshRateHz_);
     clientFoveatedEncodingActive_.store(false);
+    tenBitEncodingActive_.store(false);
     clientSupportsFoveatedEncoding_.store(false);
     clientSupportsStreamReconfigure_.store(false);
     clientSupportsMixedRealityPassthrough_.store(false);
@@ -2353,6 +2365,7 @@ void StreamingServer::ApplyPendingStreamConfigLocked(
         layout.foveatedEncodingActive && clientSupportsFoveatedEncoding_.load();
     newEncoder->SetFoveationSettings(BuildEncoderFoveationSettings(
         useFoveatedEncoding, layout.foveationLayout));
+    newEncoder->SetTenBitEncoding(tenBitEncodingActive_.load());
 
     const uint32_t bitrateMbps = currentBitrateMbps_.load();
     const uint32_t refreshHz = std::max(targetRefreshRateHz_.load(), 1u);

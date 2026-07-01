@@ -378,6 +378,10 @@ ConfigValues ParseConfigToml(std::istream& input, const ConfigValues& defaults)
                     values.encoderPreset = value;
                 }
             }
+            else if (key == "encoder_10bit")
+            {
+                values.encoder10Bit = ParseBool(value);
+            }
             else if (key == "transport")
             {
                 value = ParseString(value);

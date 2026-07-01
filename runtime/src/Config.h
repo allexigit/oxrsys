@@ -22,6 +22,7 @@ struct ConfigValues
     uint32_t keyframeIntervalSec = 2; // Seconds between forced keyframes
     std::string videoCodec = "h265"; // "h265", "h264", "auto"
     std::string encoderPreset = "balanced"; // "quality", "balanced", "speed"
+    bool encoder10Bit = false;      // Encode HEVC Main10 for capable H.265 clients
     std::string streamingTransport = "auto"; // "auto", "wifi", "usb_adb"
     std::string foveatedEncodingPreset = "off"; // "off", "light", "medium", "high"
     std::string clientFoveationPreset = "auto"; // "auto", "off", "light", "medium", "high"

@@ -22,6 +22,7 @@ public final class VideoDecoder: @unchecked Sendable {
     private var sps: Data?
     private var pps: Data?
     private var paramSetsReady = false
+    private var prefer10Bit = false
 
     private var sliceCount: Int = 0
     private var decodeErrorCount: Int = 0
@@ -34,6 +35,12 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     public init() {}
+
+    /// Requests a 10-bit VideoToolbox output surface for HEVC Main10 streams.
+    /// H.264 remains on the standard 8-bit output path.
+    public func setPrefer10Bit(_ value: Bool) {
+        locked { prefer10Bit = value }
+    }
 
     public func configure(callback: @escaping OnFrame) {
         locked { onFrame = callback }
@@ -243,9 +250,13 @@ public final class VideoDecoder: @unchecked Sendable {
             return
         }
 
+        let outputPixelFormat = locked { prefer10Bit && codec == .h265 }
+            ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         let decoderAttrs: [String: Any] = [
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPixelFormatTypeKey as String: outputPixelFormat
         ]
 
         var outputCallback = VTDecompressionOutputCallbackRecord(

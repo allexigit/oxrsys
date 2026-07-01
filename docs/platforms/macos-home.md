@@ -210,6 +210,9 @@ The video codec control writes `h265`, `h264`, or `auto`. H.265 remains the defa
 clients that do not advertise codec capabilities are treated as H.265-only. H.264 is selected only
 for clients that explicitly advertise H.264 support.
 
+The `encoder_10bit` control requests HEVC Main10 and takes effect only for an H.265 stream to a
+client that advertises 10-bit decode support. H.264 remains 8-bit.
+
 The refresh control writes one of `60`, `72`, `80`, `90`, or `120` Hz. The
 runtime announces that value, and Quest clients request it through
 `XR_FB_display_refresh_rate` before reporting the active display rate back.

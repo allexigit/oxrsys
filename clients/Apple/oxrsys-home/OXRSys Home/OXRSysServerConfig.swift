@@ -15,6 +15,7 @@ struct OXRSysServerConfig: Equatable {
     var keyframeIntervalSec = 2
     var videoCodec: VideoCodecSetting = .h265
     var encoderPreset: EncoderPreset = .balanced
+    var encoder10Bit = false
     var transport: StreamingTransportSetting = .auto
     var foveatedEncodingPreset: FoveationPresetSetting = .off
     var clientFoveationPreset: ClientFoveationPresetSetting = .auto
@@ -68,6 +69,9 @@ struct OXRSysServerConfig: Equatable {
     # balanced = default, good mix
     # quality  = best visual quality, slightly higher latency
     encoder_preset = "balanced"
+
+    # Encode HEVC Main10 for capable H.265 clients. H.264 remains 8-bit.
+    encoder_10bit = false
 
     # Streaming transport: "auto", "wifi", or "usb_adb".
     transport = "auto"
@@ -144,6 +148,9 @@ struct OXRSysServerConfig: Equatable {
         if let value = stringValue("encoder_preset", in: text), let preset = EncoderPreset(rawValue: value) {
             config.encoderPreset = preset
         }
+        if let value = boolValue("encoder_10bit", in: text) {
+            config.encoder10Bit = value
+        }
         if let value = stringValue("transport", in: text), let transport = StreamingTransportSetting(rawValue: value) {
             config.transport = transport
         }
@@ -211,6 +218,7 @@ struct OXRSysServerConfig: Equatable {
                 ("keyframe_interval_sec", "\(keyframeIntervalSec)"),
                 ("video_codec", "\"\(videoCodec.rawValue)\""),
                 ("encoder_preset", "\"\(encoderPreset.rawValue)\""),
+                ("encoder_10bit", boolString(encoder10Bit)),
                 ("transport", "\"\(transport.rawValue)\""),
                 ("foveated_encoding_preset", "\"\(foveatedEncodingPreset.rawValue)\""),
                 ("client_foveation_preset", "\"\(clientFoveationPreset.rawValue)\""),
