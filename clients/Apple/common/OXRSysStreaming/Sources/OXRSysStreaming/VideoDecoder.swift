@@ -23,6 +23,10 @@ public final class VideoDecoder: @unchecked Sendable {
     private var pps: Data?
     private var paramSetsReady = false
     private var prefer10Bit = false
+    // After a decode error, inter frames reference data we no longer have, so decoding them
+    // smears corruption forward. Drop VCL slices until a keyframe (IRAP/IDR) arrives while nudging
+    // the server for one — turning packet loss into a brief clean freeze instead of a green smear.
+    private var awaitingKeyframe = false
 
     private var sliceCount: Int = 0
     private var decodeErrorCount: Int = 0
@@ -116,7 +120,13 @@ public final class VideoDecoder: @unchecked Sendable {
                 tryCreateFormatDescription()
             }
         case 0...31:
-            decodeSlice(nal, codec: .h265, presentationTimeNs: presentationTimeNs)
+            // IRAP (16-23: BLA/IDR/CRA) are independently decodable random-access points.
+            let isIrap = nalType >= 16 && nalType <= 23
+            if shouldDropWhileRecovering(isKeyframe: isIrap) {
+                invokeDecodeErrorCallback() // keep nudging for a keyframe (cooldown rate-limits)
+            } else {
+                decodeSlice(nal, codec: .h265, presentationTimeNs: presentationTimeNs)
+            }
         default:
             break
         }
@@ -148,9 +158,28 @@ public final class VideoDecoder: @unchecked Sendable {
                 tryCreateFormatDescription()
             }
         case 1, 5:
-            decodeSlice(nal, codec: .h264, presentationTimeNs: presentationTimeNs)
+            // H.264 IDR (type 5) is the random-access keyframe; type 1 is a non-IDR (inter) slice.
+            if shouldDropWhileRecovering(isKeyframe: nalType == 5) {
+                invokeDecodeErrorCallback() // keep nudging for a keyframe (cooldown rate-limits)
+            } else {
+                decodeSlice(nal, codec: .h264, presentationTimeNs: presentationTimeNs)
+            }
         default:
             break
+        }
+    }
+
+    /// While recovering from a decode error, drop inter slices until a keyframe arrives. Clears the
+    /// recovering state on the keyframe so normal decoding resumes. Returns true if this slice
+    /// should be dropped.
+    private func shouldDropWhileRecovering(isKeyframe: Bool) -> Bool {
+        locked { () -> Bool in
+            guard awaitingKeyframe else { return false }
+            if isKeyframe {
+                awaitingKeyframe = false
+                return false
+            }
+            return true
         }
     }
 
@@ -173,6 +202,7 @@ public final class VideoDecoder: @unchecked Sendable {
         sps = nil
         pps = nil
         paramSetsReady = false
+        awaitingKeyframe = false
         sliceCount = 0
         decodeErrorCount = 0
         return oldSession
@@ -484,7 +514,11 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     fileprivate func invokeDecodeErrorCallback() {
-        let callback = locked { onDecodeErrorCallback }
+        // Enter recovery: drop inter slices until a keyframe so corruption can't propagate.
+        let callback = locked { () -> (@Sendable () -> Void)? in
+            awaitingKeyframe = true
+            return onDecodeErrorCallback
+        }
         callback?()
     }
 
