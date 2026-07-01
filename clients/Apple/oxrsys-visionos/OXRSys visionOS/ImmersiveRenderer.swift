@@ -180,12 +180,12 @@ actor ImmersiveRenderer {
         renderPassDescriptor.colorAttachments[0].loadAction = .clear
         renderPassDescriptor.colorAttachments[0].storeAction = .store
         renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        // visionOS reprojects each presented frame using the depth buffer; with no valid depth
-        // the device drops every frame (black) while the simulator does not. Clear the depth to a
-        // far (≈infinity) head-locked distance: the compositor's positional reprojection then
-        // applies ~no parallax, leaving clean rotation-only warp (matching our shader) and avoiding
-        // the forward-motion "swim/zoom" a near flat-depth plane produces on a streamed 2D frame.
-        let clip = drawable.computeProjection(viewIndex: 0) * SIMD4<Float>(0, 0, -1000.0, 1)
+        // visionOS reprojects each presented frame using drawable.deviceAnchor + the depth buffer,
+        // which is the only client-side compensation for head *translation* (up/down/sway). Clear
+        // depth to a ~2 m head-locked plane so the compositor applies that parallax and translation
+        // feels responsive rather than lagging the full round-trip. The tradeoff is some "swim" on
+        // content far from 2 m; the real fix is streaming a real depth buffer (6DOF timewarp).
+        let clip = drawable.computeProjection(viewIndex: 0) * SIMD4<Float>(0, 0, -2.0, 1)
         renderPassDescriptor.depthAttachment.texture = drawable.depthTextures[0]
         renderPassDescriptor.depthAttachment.loadAction = .clear
         renderPassDescriptor.depthAttachment.storeAction = .store
