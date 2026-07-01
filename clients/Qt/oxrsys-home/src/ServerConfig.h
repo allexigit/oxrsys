@@ -27,6 +27,7 @@ struct ServerConfig
     QString foveatedEncodingPreset = "off";
     QString clientFoveationPreset = "auto";
     bool clientUpscaling = false;
+    double clientSharpening = 0.0;
     QString clientReprojection = "pose";
     QString abrMode = "bitrate";
     bool passthroughEnabled = false;

@@ -990,6 +990,8 @@ oxr::protocol::ServerAnnounce StreamingServer::BuildServerAnnounce(
     announce.foveationEdgeRatioX = layout.parameters.edgeRatioX;
     announce.foveationEdgeRatioY = layout.parameters.edgeRatioY;
     announce.spatialPort = oxr::protocol::SPATIAL_PORT;
+    announce.clientSharpeningPercent = static_cast<uint32_t>(
+        std::lround(std::clamp(config.clientSharpening, 0.0f, 1.0f) * 100.0f));
     return announce;
 }
 

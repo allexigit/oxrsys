@@ -69,6 +69,10 @@ client_foveation_preset = "auto"
 # Enable Quest shader upscaling after video decode.
 client_upscaling = false
 
+# Headset contrast-adaptive sharpening strength (0.0-1.0). 0 = off. A little (0.3-0.5)
+# counteracts encode/upscale softness on the headset. Applied by the client after decode.
+client_sharpening = 0.0
+
 # Quest client reprojection for short decode/network gaps: "off", "pose", or "pose_warp".
 client_reprojection = "pose"
 

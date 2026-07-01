@@ -548,6 +548,14 @@ struct ContentView: View {
                         }
 
                         Toggle("Quest shader upscaling", isOn: streamingBinding(\.clientUpscaling))
+                        LabeledSlider(
+                            title: "Headset Sharpening",
+                            value: streamingBinding(\.clientSharpening),
+                            range: 0.0...1.0,
+                            displayValue: model.serverConfig.clientSharpening <= 0.0
+                                ? "Off"
+                                : String(format: "%.2f", model.serverConfig.clientSharpening)
+                        )
                         Picker("Client reprojection", selection: streamingBinding(\.clientReprojection)) {
                             ForEach(ClientReprojectionSetting.allCases) { mode in
                                 Text(mode.displayName).tag(mode)

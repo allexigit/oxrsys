@@ -6,6 +6,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Added
 
+- Added headset contrast-adaptive sharpening: a `client_sharpening` (0.0-1.0) server setting is carried to the client in the announce, and the visionOS client applies an FSR-RCAS-style sharpen pass after decode/upscale to counteract encode softness, with matching SwiftUI Home and Qt Home sliders.
 - Added foveated-stream decode to the visionOS client: it now advertises `CLIENT_CAPABILITY_FOVEATED_ENCODING` and inverse-warps the server's AADT layout in the fragment shader using the announced foveation parameters, so `foveated_encoding_preset` takes effect on Vision Pro (previously the client did not advertise support, so the server sent non-foveated video).
 - Added per-device render-resolution presets: `render_device = "quest2" | "quest3" | "avp"` selects the per-eye render resolution the runtime advertises to the app (1440x1584 / 1512x1680 / 3024x3360), with matching SwiftUI Home and Qt Home controls. The default (`quest3`) matches the previous fixed 1512x1680; use the existing `resolution_scale` to trim how much of it is encoded and streamed.
 - Added negotiated 10-bit H.265 streaming: the visionOS client advertises HEVC Main10 decode support, the runtime requests Main10 only when `streaming.encoder_10bit = true`, the selected codec is H.265, and the connected client supports it, and SwiftUI Home and Qt Home expose the setting. H.264 and legacy clients remain on the 8-bit path.

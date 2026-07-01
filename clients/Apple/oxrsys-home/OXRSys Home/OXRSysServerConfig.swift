@@ -21,6 +21,7 @@ struct OXRSysServerConfig: Equatable {
     var foveatedEncodingPreset: FoveationPresetSetting = .off
     var clientFoveationPreset: ClientFoveationPresetSetting = .auto
     var clientUpscaling = false
+    var clientSharpening = 0.0
     var clientReprojection: ClientReprojectionSetting = .pose
     var abrMode: AbrModeSetting = .bitrate
     var passthroughEnabled = false
@@ -91,6 +92,10 @@ struct OXRSysServerConfig: Equatable {
 
     # Enable Quest shader upscaling after video decode.
     client_upscaling = false
+
+    # Headset contrast-adaptive sharpening strength (0.0-1.0). 0 = off. A little (0.3-0.5)
+    # counteracts encode/upscale softness on the headset.
+    client_sharpening = 0.0
 
     # Quest client reprojection for short decode/network gaps: "off", "pose", or "pose_warp".
     client_reprojection = "pose"
@@ -172,6 +177,9 @@ struct OXRSysServerConfig: Equatable {
         if let value = boolValue("client_upscaling", in: text) {
             config.clientUpscaling = value
         }
+        if let value = doubleValue("client_sharpening", in: text), value >= 0.0, value <= 1.0 {
+            config.clientSharpening = value
+        }
         if let value = stringValue("client_reprojection", in: text), let mode = ClientReprojectionSetting(rawValue: value) {
             config.clientReprojection = mode
         }
@@ -233,6 +241,7 @@ struct OXRSysServerConfig: Equatable {
                 ("foveated_encoding_preset", "\"\(foveatedEncodingPreset.rawValue)\""),
                 ("client_foveation_preset", "\"\(clientFoveationPreset.rawValue)\""),
                 ("client_upscaling", boolString(clientUpscaling)),
+                ("client_sharpening", decimalString(clientSharpening)),
                 ("client_reprojection", "\"\(clientReprojection.rawValue)\""),
                 ("abr_mode", "\"\(abrMode.rawValue)\""),
                 ("passthrough_enabled", boolString(passthroughEnabled)),

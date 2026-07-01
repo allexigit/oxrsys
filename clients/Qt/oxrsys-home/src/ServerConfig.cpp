@@ -261,6 +261,7 @@ QString ServerConfig::defaultText()
         "foveated_encoding_preset = \"off\"\n"
         "client_foveation_preset = \"auto\"\n"
         "client_upscaling = false\n"
+        "client_sharpening = 0.0\n"
         "client_reprojection = \"pose\"\n"
         "abr_mode = \"bitrate\"\n"
         "passthrough_enabled = false\n"
@@ -369,6 +370,12 @@ ServerConfig ServerConfig::parse(const QString& text)
         config.clientUpscaling = clientUpscaling;
     }
 
+    const double clientSharpening = rawValue("client_sharpening", text).toDouble(&ok);
+    if (ok && clientSharpening >= 0.0 && clientSharpening <= 1.0)
+    {
+        config.clientSharpening = clientSharpening;
+    }
+
     const QString clientReprojection = stringValue("client_reprojection", text);
     if (isClientReprojection(clientReprojection))
     {
@@ -470,6 +477,7 @@ QString ServerConfig::mergedInto(const QString& currentText) const
         {"foveated_encoding_preset", QString("\"%1\"").arg(foveatedEncodingPreset)},
         {"client_foveation_preset", QString("\"%1\"").arg(clientFoveationPreset)},
         {"client_upscaling", boolString(clientUpscaling)},
+        {"client_sharpening", decimalString(clientSharpening)},
         {"client_reprojection", QString("\"%1\"").arg(clientReprojection)},
         {"abr_mode", QString("\"%1\"").arg(abrMode)},
         {"passthrough_enabled", boolString(passthroughEnabled)},

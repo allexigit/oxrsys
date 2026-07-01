@@ -157,6 +157,25 @@ private final class FoveationState: @unchecked Sendable {
     }
 }
 
+/// Headset contrast-adaptive sharpening strength (0–1) for the renderer, set from the server
+/// announce. 0 = off.
+private final class PostFXState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sharpen: Float = 0
+
+    func setSharpen(_ value: Float) {
+        lock.lock()
+        sharpen = value
+        lock.unlock()
+    }
+
+    func sharpenValue() -> Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return sharpen
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -214,6 +233,7 @@ final class AppModel {
     private nonisolated let eyeProjectionState = EyeProjectionState()
     private nonisolated let renderPoseReprojector = RenderPoseReprojector()
     private nonisolated let foveationState = FoveationState()
+    private nonisolated let postFXState = PostFXState()
 
     private var statsTimer: Timer?
     private var lastStatsTimeNs: Int64 = 0
@@ -450,6 +470,7 @@ final class AppModel {
         // The server foveates and 10-bit-encodes only when the client advertises it can decode
         // the result; compute the inverse-warp params from what the server announces it will send.
         foveationState.set(Self.foveationParams(announce: server.announce, enabled: true))
+        postFXState.setSharpen(Self.sharpenStrength(from: server.announce))
 
         let connectionServer = DiscoveredServer(announce: server.announce, address: serverAddress)
         discovery.sendConnect(
@@ -498,12 +519,24 @@ final class AppModel {
         pixelBufferState.set(nil, presentationTimeNs: 0)
         keyframeRecoveryState.reset()
         foveationState.set(FoveationShaderParams())
+        postFXState.setSharpen(0)
     }
 
     /// Foveated-encoding parameters for the fragment shader's inverse warp. Passthrough unless the
     /// server is sending a foveated stream.
     nonisolated func foveationParams() -> FoveationShaderParams {
         foveationState.get()
+    }
+
+    /// Current headset sharpening strength (0–1) for the renderer's post-process pass.
+    nonisolated func sharpenStrength() -> Float {
+        postFXState.sharpenValue()
+    }
+
+    /// Sharpening strength (0–1) the server requested via its Home config, carried in the announce
+    /// as a percent. Defaults to 0 (off) for older servers that leave the field zero.
+    nonisolated private static func sharpenStrength(from announce: ServerAnnounce) -> Float {
+        Float(min(announce.clientSharpeningPercent, 100)) / 100.0
     }
 
     /// Builds the inverse-AADT shader parameters from the server announce so the un-warp matches

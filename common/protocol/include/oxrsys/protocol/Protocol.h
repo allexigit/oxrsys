@@ -203,7 +203,7 @@ struct ServerAnnounce
 
     // Protocol v1.2 trailing fields.
     uint32_t spatialPort = SPATIAL_PORT;
-    uint32_t reserved2 = 0;
+    uint32_t clientSharpeningPercent = 0; // 0-100 headset contrast-adaptive sharpen strength; 0 = off
 };
 
 struct ClientConnect

@@ -28,6 +28,7 @@ struct ConfigValues
     std::string foveatedEncodingPreset = "off"; // "off", "light", "medium", "high"
     std::string clientFoveationPreset = "auto"; // "auto", "off", "light", "medium", "high"
     bool clientUpscaling = false;    // Enable Quest shader upscaling
+    float clientSharpening = 0.0f;   // Headset contrast-adaptive sharpen strength (0.0-1.0); 0 = off
     std::string clientReprojectionMode = "pose"; // "off", "pose", "pose_warp"
     std::string abrMode = "bitrate"; // "off", "bitrate", "full"
     bool passthroughEnabled = false;  // Allow app-requested alpha blend passthrough

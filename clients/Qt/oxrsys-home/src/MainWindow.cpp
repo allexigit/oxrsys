@@ -851,6 +851,7 @@ QWidget* MainWindow::buildStreamingTab()
               25,
               100);
     addSlider("Keyframe Interval", &keyframeSlider_, &keyframeValueLabel_, 1, 10);
+    addSlider("Headset Sharpening", &sharpeningSlider_, &sharpeningValueLabel_, 0, 100);
 
     auto* form = new QFormLayout();
     refreshRateCombo_ = new QComboBox(configBox);
@@ -947,6 +948,7 @@ QWidget* MainWindow::buildStreamingTab()
     connect(resolutionSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(dynamicResolutionSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(keyframeSlider_, &QSlider::valueChanged, this, connectConfigChanged);
+    connect(sharpeningSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(refreshRateCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(renderDeviceCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(encoderPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
@@ -1307,6 +1309,7 @@ void MainWindow::refreshStreaming()
     resolutionSlider_->setValue(qRound(config.resolutionScale * 100.0));
     dynamicResolutionSlider_->setValue(qRound(config.dynamicResolutionMinScale * 100.0));
     keyframeSlider_->setValue(config.keyframeIntervalSec);
+    sharpeningSlider_->setValue(qRound(config.clientSharpening * 100.0));
     refreshRateCombo_->setCurrentIndex(std::max(refreshRateCombo_->findData(config.refreshRateHz), 0));
     renderDeviceCombo_->setCurrentIndex(std::max(renderDeviceCombo_->findData(config.renderDevice), 0));
     encoderPresetCombo_->setCurrentIndex(std::max(encoderPresetCombo_->findData(config.encoderPreset), 0));
@@ -1343,6 +1346,9 @@ void MainWindow::refreshStreaming()
     dynamicResolutionValueLabel_->setText(
         QString::number(config.dynamicResolutionMinScale, 'f', 2));
     keyframeValueLabel_->setText(QString("%1 s").arg(config.keyframeIntervalSec));
+    sharpeningValueLabel_->setText(config.clientSharpening <= 0.0
+                                       ? QStringLiteral("Off")
+                                       : QString::number(config.clientSharpening, 'f', 2));
     adbStatusLabel_->setText(model_->adbStatus().message);
     clearAdbPathButton_->setEnabled(!model_->customAdbPath().isEmpty());
     usbStatusLabel_->setText(model_->questUsbStatus());
@@ -1534,6 +1540,7 @@ void MainWindow::updateConfigFromControls()
     config.resolutionScale = resolutionSlider_->value() / 100.0;
     config.dynamicResolutionMinScale = dynamicResolutionSlider_->value() / 100.0;
     config.keyframeIntervalSec = keyframeSlider_->value();
+    config.clientSharpening = sharpeningSlider_->value() / 100.0;
     config.renderDevice = renderDeviceCombo_->currentData().toString();
     config.encoderPreset = encoderPresetCombo_->currentData().toString();
     config.videoCodec = videoCodecCombo_->currentData().toString();
@@ -1550,5 +1557,8 @@ void MainWindow::updateConfigFromControls()
     dynamicResolutionValueLabel_->setText(
         QString::number(config.dynamicResolutionMinScale, 'f', 2));
     keyframeValueLabel_->setText(QString("%1 s").arg(config.keyframeIntervalSec));
+    sharpeningValueLabel_->setText(config.clientSharpening <= 0.0
+                                       ? QStringLiteral("Off")
+                                       : QString::number(config.clientSharpening, 'f', 2));
     model_->scheduleStructuredConfigSave();
 }

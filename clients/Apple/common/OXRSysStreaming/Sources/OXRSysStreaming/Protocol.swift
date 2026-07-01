@@ -193,7 +193,7 @@ public struct ServerAnnounce: Sendable {
     public var foveationEdgeRatioX: Float = 1
     public var foveationEdgeRatioY: Float = 1
     public var spatialPort: UInt32 = UInt32(OXRProtocol.spatialPort)
-    public var reserved2: UInt32 = 0
+    public var clientSharpeningPercent: UInt32 = 0 // 0-100; headset contrast-adaptive sharpen strength
 
     public init() {}
 

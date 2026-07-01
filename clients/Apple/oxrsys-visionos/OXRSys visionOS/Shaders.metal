@@ -96,45 +96,43 @@ vertex StereoVertexOut stereoImmersiveVertex(uint vertexID [[vertex_id]],
     return out;
 }
 
-fragment float4 stereoImmersiveFragment(
-    StereoVertexOut in [[stage_in]],
-    texture2d<float> lumaTexture [[texture(0)]],
-    texture2d<float> chromaTexture [[texture(1)]],
-    constant ReprojData *reproj [[buffer(0)]],
-    constant VideoColorParams &colorParams [[buffer(1)]],
-    constant FoveationParams &fov [[buffer(2)]]
-) {
-    constexpr sampler textureSampler(address::clamp_to_edge,
-                                     mag_filter::linear,
-                                     min_filter::linear);
+// Per-frame post-processing parameters (display-space sharpening).
+struct PostFXParams {
+    float2 invResolution; // 1 / per-eye output pixels (display-space texel size)
+    float sharpen;        // 0 = off; contrast-adaptive sharpen strength
+    float _pad;
+};
 
-    if (!lumaTexture.get_width() || !chromaTexture.get_width()) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    ReprojData rd = reproj[uint(in.eyeIndex)];
+// Resolves one displayed eye-UV to linear RGB: rotational reprojection → foveation unwarp →
+// side-by-side stereo split → video-range BT.709 YCbCr→RGB. Factored out so the sharpening pass
+// can resample neighbours through the exact same mapping.
+static float3 sampleSceneRGB(float2 outCoord,
+                             float eyeIndex,
+                             ReprojData rd,
+                             constant FoveationParams &fov,
+                             constant VideoColorParams &colorParams,
+                             texture2d<float> lumaTexture,
+                             texture2d<float> chromaTexture,
+                             sampler s) {
     float left = rd.tangents.x;
     float right = rd.tangents.y;
     float up = rd.tangents.z;
     float down = rd.tangents.w;
 
     // Ray for this output fragment in the current eye's frustum, at the z = -1 plane.
-    // texCoord.y = 0 is the top of the view (+up), texCoord.y = 1 the bottom (-down).
-    float x = mix(-left, right, in.texCoord.x);
-    float y = mix(up, -down, in.texCoord.y);
+    // outCoord.y = 0 is the top of the view (+up), outCoord.y = 1 the bottom (-down).
+    float x = mix(-left, right, outCoord.x);
+    float y = mix(up, -down, outCoord.y);
     float3 dirCurrent = float3(x, y, -1.0);
 
     // Rotate into the pose the server rendered this frame for, then reproject through the same
-    // per-eye frustum to find the source texel. rot == identity → eyeUV == texCoord (exact
-    // passthrough when the head has not moved since the frame was rendered).
+    // per-eye frustum to find the source texel (identity rot → eyeUV == outCoord).
     float3 dirRender = rd.rot * dirCurrent;
-    float2 eyeUV = in.texCoord;
+    float2 eyeUV = outCoord;
     if (dirRender.z < 0.0) {
         float zf = -dirRender.z;
-        float xPlane = dirRender.x / zf;
-        float yPlane = dirRender.y / zf;
-        eyeUV = float2((xPlane + left) / (left + right),
-                       (up - yPlane) / (up + down));
+        eyeUV = float2((dirRender.x / zf + left) / (left + right),
+                       (up - dirRender.y / zf) / (up + down));
     }
 
     // Undo the server's foveated-encoding warp (passthrough when fov.enabled == 0): map this
@@ -150,19 +148,58 @@ fragment float4 stereoImmersiveFragment(
         sourceUV = clamp(sourceUV, 0.0, 1.0);
     }
 
-    float eyeOffset = in.eyeIndex * 0.5;
+    float eyeOffset = eyeIndex * 0.5;
     float2 stereoUV = float2(sourceUV.x * 0.5 + eyeOffset, sourceUV.y);
 
-    float yLuma = lumaTexture.sample(textureSampler, stereoUV).r;
-    float2 cbcr = chromaTexture.sample(textureSampler, stereoUV).rg;
+    float yLuma = lumaTexture.sample(s, stereoUV).r;
+    float2 cbcr = chromaTexture.sample(s, stereoUV).rg;
 
     // The streaming contract is limited/video-range BT.709 SDR. Expand luma and chroma using
     // bit-depth-specific normalized code values supplied by the renderer, then convert to RGB.
     float luma = (yLuma - colorParams.range.x) * colorParams.range.y;
     float cb = (cbcr.x - colorParams.range.z) * colorParams.range.w;
     float cr = (cbcr.y - colorParams.range.z) * colorParams.range.w;
-    float3 rgb = float3(luma + 1.5748 * cr,
-                        luma - 0.1873 * cb - 0.4681 * cr,
-                        luma + 1.8556 * cb);
-    return float4(clamp(rgb, 0.0, 1.0), 1.0);
+    return float3(luma + 1.5748 * cr,
+                  luma - 0.1873 * cb - 0.4681 * cr,
+                  luma + 1.8556 * cb);
+}
+
+fragment float4 stereoImmersiveFragment(
+    StereoVertexOut in [[stage_in]],
+    texture2d<float> lumaTexture [[texture(0)]],
+    texture2d<float> chromaTexture [[texture(1)]],
+    constant ReprojData *reproj [[buffer(0)]],
+    constant VideoColorParams &colorParams [[buffer(1)]],
+    constant FoveationParams &fov [[buffer(2)]],
+    constant PostFXParams &postfx [[buffer(3)]]
+) {
+    constexpr sampler textureSampler(address::clamp_to_edge,
+                                     mag_filter::linear,
+                                     min_filter::linear);
+
+    if (!lumaTexture.get_width() || !chromaTexture.get_width()) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    ReprojData rd = reproj[uint(in.eyeIndex)];
+    float3 color = sampleSceneRGB(in.texCoord, in.eyeIndex, rd, fov, colorParams,
+                                  lumaTexture, chromaTexture, textureSampler);
+
+    // Contrast-adaptive sharpening (FSR-RCAS-style): unsharp against the 4-neighbour average,
+    // clamped to the local min/max so detail crisps up without ringing/overshoot. A cheap
+    // perceived-sharpness win for the bilinearly-upscaled, bitrate-limited video. Off at 0.
+    if (postfx.sharpen > 0.0) {
+        float2 d = postfx.invResolution;
+        float3 l = sampleSceneRGB(in.texCoord + float2(-d.x, 0.0), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
+        float3 r = sampleSceneRGB(in.texCoord + float2( d.x, 0.0), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
+        float3 u = sampleSceneRGB(in.texCoord + float2(0.0, -d.y), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
+        float3 dn = sampleSceneRGB(in.texCoord + float2(0.0,  d.y), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
+        float3 mn = min(color, min(min(l, r), min(u, dn)));
+        float3 mx = max(color, max(max(l, r), max(u, dn)));
+        float3 blurred = (l + r + u + dn) * 0.25;
+        float3 sharpened = color + (color - blurred) * postfx.sharpen;
+        color = clamp(sharpened, mn, mx);
+    }
+
+    return float4(clamp(color, 0.0, 1.0), 1.0);
 }

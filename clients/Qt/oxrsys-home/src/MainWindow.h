@@ -100,6 +100,8 @@ private:
     QLabel* dynamicResolutionValueLabel_ = nullptr;
     QSlider* keyframeSlider_ = nullptr;
     QLabel* keyframeValueLabel_ = nullptr;
+    QSlider* sharpeningSlider_ = nullptr;
+    QLabel* sharpeningValueLabel_ = nullptr;
     QComboBox* refreshRateCombo_ = nullptr;
     QComboBox* renderDeviceCombo_ = nullptr;
     QComboBox* encoderPresetCombo_ = nullptr;

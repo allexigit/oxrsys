@@ -419,6 +419,14 @@ ConfigValues ParseConfigToml(std::istream& input, const ConfigValues& defaults)
             {
                 values.clientUpscaling = ParseBool(value);
             }
+            else if (key == "client_sharpening")
+            {
+                float val = std::stof(value);
+                if (val >= 0.0f && val <= 1.0f)
+                {
+                    values.clientSharpening = val;
+                }
+            }
             else if (key == "client_reprojection")
             {
                 value = ParseString(value);
@@ -572,7 +580,7 @@ bool Config::ReloadIfChangedLocked(bool force)
     if (!force)
     {
         spdlog::info(
-            "OXRSys: Reloaded config from {} (runtime_enabled={} bitrate={}Mbps fov={} refresh={}Hz res_scale={:.2f} render_device={} dyn_min={:.2f} keyframe={}s codec={} preset={} transport={} ffe={} client_ffr={} upscaling={} reprojection={} abr={} passthrough={} occlusion={} spatial={}/{}/{}/{} audio={} quest_logcat={})",
+            "OXRSys: Reloaded config from {} (runtime_enabled={} bitrate={}Mbps fov={} refresh={}Hz res_scale={:.2f} render_device={} dyn_min={:.2f} keyframe={}s codec={} preset={} transport={} ffe={} client_ffr={} upscaling={} sharpen={:.2f} reprojection={} abr={} passthrough={} occlusion={} spatial={}/{}/{}/{} audio={} quest_logcat={})",
             configFilePath,
             newValues.runtimeEnabled,
             newValues.bitrateMbps,
@@ -588,6 +596,7 @@ bool Config::ReloadIfChangedLocked(bool force)
             newValues.foveatedEncodingPreset,
             newValues.clientFoveationPreset,
             newValues.clientUpscaling,
+            newValues.clientSharpening,
             newValues.clientReprojectionMode,
             newValues.abrMode,
             newValues.passthroughEnabled,
@@ -695,13 +704,13 @@ void Config::SetupLogging()
     spdlog::info("OXRSys Runtime starting (config from {})", configFilePath);
     spdlog::info("  runtime_enabled={} file_logging={} quest_logcat={}",
                   values_.runtimeEnabled, values_.fileLogging, values_.questLogcat);
-    spdlog::info("  bitrate={}Mbps fov={}° refresh={}Hz res_scale={:.2f} dyn_min={:.2f} keyframe={}s preset={} transport={} ffe={} client_ffr={} upscaling={} reprojection={} abr={} passthrough={} occlusion={} spatial={}/{}/{}/{} audio={}",
+    spdlog::info("  bitrate={}Mbps fov={}° refresh={}Hz res_scale={:.2f} dyn_min={:.2f} keyframe={}s preset={} transport={} ffe={} client_ffr={} upscaling={} sharpen={:.2f} reprojection={} abr={} passthrough={} occlusion={} spatial={}/{}/{}/{} audio={}",
                   values_.bitrateMbps, values_.fovDegrees, values_.refreshRateHz,
                   values_.resolutionScale, values_.dynamicResolutionMinScale,
                   values_.keyframeIntervalSec,
                   values_.encoderPreset, values_.streamingTransport,
                   values_.foveatedEncodingPreset, values_.clientFoveationPreset,
-                  values_.clientUpscaling, values_.clientReprojectionMode,
+                  values_.clientUpscaling, values_.clientSharpening, values_.clientReprojectionMode,
                   values_.abrMode, values_.passthroughEnabled, values_.occlusionMode,
                   values_.spatialEnabled, values_.spatialAnchors, values_.spatialScene,
                   values_.spatialPersistence, values_.headsetAudio);
