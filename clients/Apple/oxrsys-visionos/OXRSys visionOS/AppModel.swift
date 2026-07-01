@@ -11,7 +11,7 @@ import QuartzCore
 import SwiftUI
 import simd
 
-private final class PixelBufferState: @unchecked Sendable {
+private nonisolated final class PixelBufferState: @unchecked Sendable {
     private let lock = NSLock()
     private var pixelBuffer: CVPixelBuffer?
     private var presentationTimeNs: Int64 = 0
@@ -39,7 +39,7 @@ private final class PixelBufferState: @unchecked Sendable {
     }
 }
 
-private final class KeyframeRecoveryState: @unchecked Sendable {
+private nonisolated final class KeyframeRecoveryState: @unchecked Sendable {
     private let lock = NSLock()
     private var consecutiveDecodeErrors = 0
     private var lastKeyframeRequestTime: UInt64 = 0
@@ -76,7 +76,7 @@ private final class KeyframeRecoveryState: @unchecked Sendable {
     }
 }
 
-private final class EyeProjectionState: @unchecked Sendable {
+private nonisolated final class EyeProjectionState: @unchecked Sendable {
     private let lock = NSLock()
     private var fovAngles = SIMD4<Float>(repeating: 0) // angleLeft, angleRight, angleUp, angleDown (radians)
     private var ipd: Float = 0
@@ -97,7 +97,7 @@ private final class EyeProjectionState: @unchecked Sendable {
 
 /// Stores the head orientation the server rendered each frame for, keyed by the frame's
 /// presentation timestamp, so the renderer can reproject the displayed frame to the live pose.
-private final class RenderPoseReprojector: @unchecked Sendable {
+private nonisolated final class RenderPoseReprojector: @unchecked Sendable {
     private let lock = NSLock()
     private var orientationByPresentationNs: [Int64: simd_quatf] = [:]
     private let capacity = 240   // ring-buffer cap (~a few seconds of frames); bounds memory only
@@ -129,7 +129,7 @@ private final class RenderPoseReprojector: @unchecked Sendable {
 
 /// Foveated-encoding (AADT) parameters handed to the fragment shader. Memory layout must match
 /// the Metal `FoveationParams` struct. `enabled == 0` is a passthrough.
-struct FoveationShaderParams {
+nonisolated struct FoveationShaderParams {
     var enabled: UInt32 = 0
     var pad: UInt32 = 0
     var centerSize: SIMD2<Float> = SIMD2<Float>(1, 1)
@@ -140,7 +140,7 @@ struct FoveationShaderParams {
 
 /// Holds the foveation parameters for the renderer to read each frame. Computed once per
 /// connection from the server announce (dynamic reconfiguration is not handled yet).
-private final class FoveationState: @unchecked Sendable {
+private nonisolated final class FoveationState: @unchecked Sendable {
     private let lock = NSLock()
     private var params = FoveationShaderParams()
 
@@ -159,7 +159,7 @@ private final class FoveationState: @unchecked Sendable {
 
 /// Headset contrast-adaptive sharpening strength (0–1) for the renderer, set from the server
 /// announce. 0 = off.
-private final class PostFXState: @unchecked Sendable {
+private nonisolated final class PostFXState: @unchecked Sendable {
     private let lock = NSLock()
     private var sharpen: Float = 0
 

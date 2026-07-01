@@ -25,6 +25,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Changed
 
+- Marked the visionOS decode/render helper state types `nonisolated` so their off-main access (decode callback, render actor, UDP threads) compiles cleanly under the target's MainActor default isolation, silencing the Swift concurrency warnings. Behavior is unchanged — the types were already lock-guarded `@unchecked Sendable`.
 - Cleared the visionOS depth buffer to a far (≈infinity) distance instead of a near 2 m plane, so the compositor's positional reprojection adds ~no parallax to the streamed 2D frame — removing the forward-motion "swim/zoom" and leaving clean rotation-only reprojection.
 - Reduced visionOS present latency by ~1 frame by lowering the immersive renderer's in-flight buffer count from 3 to 2; the CompositorServices frame clock is the pacer, so the third buffer only added latency for a video blit.
 - Reduced visionOS decode latency by preferring the VideoToolbox hardware decoder and enabling real-time decode, and by splitting received NAL units in place instead of copying each whole frame into an array on the decode path.
