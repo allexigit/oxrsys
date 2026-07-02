@@ -35,6 +35,25 @@ enum VideoCodecSetting: String, CaseIterable, Identifiable {
     }
 }
 
+enum RenderDeviceSetting: String, CaseIterable, Identifiable {
+    case quest2
+    case quest3
+    case avp
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .quest2:
+            return "Quest 2 (1440×1584)"
+        case .quest3:
+            return "Quest 3 (1512×1680)"
+        case .avp:
+            return "Vision Pro (3024×3360)"
+        }
+    }
+}
+
 enum StreamingTransportSetting: String, CaseIterable, Identifiable {
     case auto
     case wifi

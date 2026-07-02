@@ -851,6 +851,7 @@ QWidget* MainWindow::buildStreamingTab()
               25,
               100);
     addSlider("Keyframe Interval", &keyframeSlider_, &keyframeValueLabel_, 1, 10);
+    addSlider("Headset Sharpening", &sharpeningSlider_, &sharpeningValueLabel_, 0, 100);
 
     auto* form = new QFormLayout();
     refreshRateCombo_ = new QComboBox(configBox);
@@ -858,6 +859,10 @@ QWidget* MainWindow::buildStreamingTab()
     {
         refreshRateCombo_->addItem(QString("%1 Hz").arg(rate), rate);
     }
+    renderDeviceCombo_ = new QComboBox(configBox);
+    renderDeviceCombo_->addItem("Quest 2 (1440x1584)", "quest2");
+    renderDeviceCombo_->addItem("Quest 3 (1512x1680)", "quest3");
+    renderDeviceCombo_->addItem("Vision Pro (3024x3360)", "avp");
     encoderPresetCombo_ = new QComboBox(configBox);
     encoderPresetCombo_->addItem("Quality", "quality");
     encoderPresetCombo_->addItem("Balanced", "balanced");
@@ -884,9 +889,12 @@ QWidget* MainWindow::buildStreamingTab()
     occlusionModeCombo_->addItem("Scene Mesh", "scene_mesh");
     occlusionModeCombo_->addItem("Environment Depth", "environment_depth");
     passthroughCheckBox_ = new QCheckBox("Passthrough", configBox);
+    encoder10BitCheckBox_ = new QCheckBox("10-bit HEVC", configBox);
     form->addRow("Refresh rate", refreshRateCombo_);
+    form->addRow("Render device", renderDeviceCombo_);
     form->addRow("Encoder preset", encoderPresetCombo_);
     form->addRow("Video codec", videoCodecCombo_);
+    form->addRow(QString(), encoder10BitCheckBox_);
     form->addRow("Foveated encoding", foveatedEncodingPresetCombo_);
     form->addRow("Transport", configTransportCombo_);
     form->addRow("ABR mode", abrModeCombo_);
@@ -940,9 +948,12 @@ QWidget* MainWindow::buildStreamingTab()
     connect(resolutionSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(dynamicResolutionSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(keyframeSlider_, &QSlider::valueChanged, this, connectConfigChanged);
+    connect(sharpeningSlider_, &QSlider::valueChanged, this, connectConfigChanged);
     connect(refreshRateCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
+    connect(renderDeviceCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(encoderPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(videoCodecCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
+    connect(encoder10BitCheckBox_, &QCheckBox::toggled, this, connectConfigChanged);
     connect(foveatedEncodingPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(clientFoveationPresetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
     connect(clientReprojectionCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, connectConfigChanged);
@@ -1270,7 +1281,7 @@ void MainWindow::refreshStreaming()
     const ServerConfig& config = model_->serverConfig();
     const QList<QWidget*> controls = {
         runtimeEnabledCheckBox_, fileLoggingCheckBox_, questLogcatCheckBox_,
-        clientUpscalingCheckBox_, headsetAudioCheckBox_, passthroughCheckBox_, spatialEnabledCheckBox_,
+        clientUpscalingCheckBox_, headsetAudioCheckBox_, passthroughCheckBox_, encoder10BitCheckBox_, spatialEnabledCheckBox_,
         spatialAnchorsCheckBox_, spatialSceneCheckBox_, spatialPersistenceCheckBox_,
         bitrateSlider_, resolutionSlider_, dynamicResolutionSlider_, keyframeSlider_,
         refreshRateCombo_, encoderPresetCombo_, videoCodecCombo_, foveatedEncodingPresetCombo_,
@@ -1288,6 +1299,8 @@ void MainWindow::refreshStreaming()
     clientUpscalingCheckBox_->setChecked(config.clientUpscaling);
     headsetAudioCheckBox_->setChecked(config.headsetAudio);
     passthroughCheckBox_->setChecked(config.passthroughEnabled);
+    encoder10BitCheckBox_->setChecked(config.encoder10Bit);
+    encoder10BitCheckBox_->setEnabled(config.videoCodec != "h264");
     spatialEnabledCheckBox_->setChecked(config.spatialEnabled);
     spatialAnchorsCheckBox_->setChecked(config.spatialAnchors);
     spatialSceneCheckBox_->setChecked(config.spatialScene);
@@ -1296,7 +1309,9 @@ void MainWindow::refreshStreaming()
     resolutionSlider_->setValue(qRound(config.resolutionScale * 100.0));
     dynamicResolutionSlider_->setValue(qRound(config.dynamicResolutionMinScale * 100.0));
     keyframeSlider_->setValue(config.keyframeIntervalSec);
+    sharpeningSlider_->setValue(qRound(config.clientSharpening * 100.0));
     refreshRateCombo_->setCurrentIndex(std::max(refreshRateCombo_->findData(config.refreshRateHz), 0));
+    renderDeviceCombo_->setCurrentIndex(std::max(renderDeviceCombo_->findData(config.renderDevice), 0));
     encoderPresetCombo_->setCurrentIndex(std::max(encoderPresetCombo_->findData(config.encoderPreset), 0));
     videoCodecCombo_->setCurrentIndex(std::max(videoCodecCombo_->findData(config.videoCodec), 0));
     foveatedEncodingPresetCombo_->setCurrentIndex(
@@ -1331,6 +1346,9 @@ void MainWindow::refreshStreaming()
     dynamicResolutionValueLabel_->setText(
         QString::number(config.dynamicResolutionMinScale, 'f', 2));
     keyframeValueLabel_->setText(QString("%1 s").arg(config.keyframeIntervalSec));
+    sharpeningValueLabel_->setText(config.clientSharpening <= 0.0
+                                       ? QStringLiteral("Off")
+                                       : QString::number(config.clientSharpening, 'f', 2));
     adbStatusLabel_->setText(model_->adbStatus().message);
     clearAdbPathButton_->setEnabled(!model_->customAdbPath().isEmpty());
     usbStatusLabel_->setText(model_->questUsbStatus());
@@ -1512,6 +1530,7 @@ void MainWindow::updateConfigFromControls()
     config.clientUpscaling = clientUpscalingCheckBox_->isChecked();
     config.headsetAudio = headsetAudioCheckBox_->isChecked();
     config.passthroughEnabled = passthroughCheckBox_->isChecked();
+    config.encoder10Bit = encoder10BitCheckBox_->isChecked();
     config.spatialEnabled = spatialEnabledCheckBox_->isChecked();
     config.spatialAnchors = spatialAnchorsCheckBox_->isChecked();
     config.spatialScene = spatialSceneCheckBox_->isChecked();
@@ -1521,8 +1540,11 @@ void MainWindow::updateConfigFromControls()
     config.resolutionScale = resolutionSlider_->value() / 100.0;
     config.dynamicResolutionMinScale = dynamicResolutionSlider_->value() / 100.0;
     config.keyframeIntervalSec = keyframeSlider_->value();
+    config.clientSharpening = sharpeningSlider_->value() / 100.0;
+    config.renderDevice = renderDeviceCombo_->currentData().toString();
     config.encoderPreset = encoderPresetCombo_->currentData().toString();
     config.videoCodec = videoCodecCombo_->currentData().toString();
+    encoder10BitCheckBox_->setEnabled(config.videoCodec != "h264");
     config.foveatedEncodingPreset = foveatedEncodingPresetCombo_->currentData().toString();
     config.clientFoveationPreset = clientFoveationPresetCombo_->currentData().toString();
     config.clientReprojection = clientReprojectionCombo_->currentData().toString();
@@ -1535,5 +1557,8 @@ void MainWindow::updateConfigFromControls()
     dynamicResolutionValueLabel_->setText(
         QString::number(config.dynamicResolutionMinScale, 'f', 2));
     keyframeValueLabel_->setText(QString("%1 s").arg(config.keyframeIntervalSec));
+    sharpeningValueLabel_->setText(config.clientSharpening <= 0.0
+                                       ? QStringLiteral("Off")
+                                       : QString::number(config.clientSharpening, 'f', 2));
     model_->scheduleStructuredConfigSave();
 }

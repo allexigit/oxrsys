@@ -18,13 +18,16 @@ struct ServerConfig
     int refreshRateHz = 72;
     double resolutionScale = 0.75;
     double dynamicResolutionMinScale = 0.50;
+    QString renderDevice = "quest3";
     int keyframeIntervalSec = 2;
     QString videoCodec = "h265";
     QString encoderPreset = "balanced";
+    bool encoder10Bit = false;
     QString transport = "auto";
     QString foveatedEncodingPreset = "off";
     QString clientFoveationPreset = "auto";
     bool clientUpscaling = false;
+    double clientSharpening = 0.0;
     QString clientReprojection = "pose";
     QString abrMode = "bitrate";
     bool passthroughEnabled = false;

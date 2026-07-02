@@ -27,10 +27,7 @@ struct ContentView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
 
-            TabView(selection: Binding(
-                get: { model.selectedTab },
-                set: { model.selectedTab = $0 }
-            )) {
+            TabView(selection: $model.selectedTab) {
                 appsTab
                     .tag(HomeTab.apps)
                     .tabItem {
@@ -444,6 +441,12 @@ struct ContentView: View {
                             displayValue: String(format: "%.2f", model.serverConfig.resolutionScale)
                         )
 
+                        Picker("Render device", selection: streamingBinding(\.renderDevice)) {
+                            ForEach(RenderDeviceSetting.allCases) { device in
+                                Text(device.displayName).tag(device)
+                            }
+                        }
+
                         LabeledSlider(
                             title: "Dynamic Resolution Min",
                             value: streamingBinding(\.dynamicResolutionMinScale),
@@ -476,6 +479,9 @@ struct ContentView: View {
                                 Text(codec.displayName).tag(codec)
                             }
                         }
+
+                        Toggle("10-bit HEVC", isOn: streamingBinding(\.encoder10Bit))
+                            .disabled(model.serverConfig.videoCodec == .h264)
 
                         Picker("Foveated encoding", selection: streamingBinding(\.foveatedEncodingPreset)) {
                             ForEach(FoveationPresetSetting.allCases) { preset in
@@ -539,6 +545,14 @@ struct ContentView: View {
                         }
 
                         Toggle("Quest shader upscaling", isOn: streamingBinding(\.clientUpscaling))
+                        LabeledSlider(
+                            title: "Headset Sharpening",
+                            value: streamingBinding(\.clientSharpening),
+                            range: 0.0...1.0,
+                            displayValue: model.serverConfig.clientSharpening <= 0.0
+                                ? "Off"
+                                : String(format: "%.2f", model.serverConfig.clientSharpening)
+                        )
                         Picker("Client reprojection", selection: streamingBinding(\.clientReprojection)) {
                             ForEach(ClientReprojectionSetting.allCases) { mode in
                                 Text(mode.displayName).tag(mode)

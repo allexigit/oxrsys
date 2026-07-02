@@ -12,9 +12,10 @@ import os
 public final class VideoReceiver: @unchecked Sendable {
     public typealias OnNalUnit = @Sendable (Data, Int64, Int64) -> Void
     public typealias OnEncodedNalUnit = @Sendable (EncodedNalUnit) -> Void
-    /// (presentationTimeNs, orientation xyzw) — the head orientation the server rendered this
-    /// frame for, echoed back so the client can reproject the frame to the live head pose.
-    public typealias OnRenderPose = @Sendable (Int64, (Float, Float, Float, Float)) -> Void
+    /// (presentationTimeNs, position xyz, orientation xyzw) — the head pose the server rendered
+    /// this frame for, echoed back so the client can reproject the frame to the live head pose
+    /// (rotation exactly; translation against an assumed depth plane).
+    public typealias OnRenderPose = @Sendable (Int64, (Float, Float, Float), (Float, Float, Float, Float)) -> Void
 
     public struct EncodedNalUnit: Sendable {
         public let data: Data
@@ -282,15 +283,18 @@ public final class VideoReceiver: @unchecked Sendable {
             let payloadSize = min(Int(header.payloadSize), n - headerSize)
 
             // Render pose packet — the head pose the server rendered this frame for. The payload
-            // is position xyz then orientation xyzw (7 floats); we use the orientation to reproject.
+            // is position xyz then orientation xyzw (7 floats).
             if header.flags & VideoFlags.renderPose != 0 {
                 if let onRenderPose, payloadSize >= MemoryLayout<Float>.size * 7 {
                     let base = UnsafeRawPointer(recvBuf + headerSize)
+                    let px = base.loadUnaligned(fromByteOffset: 0, as: Float.self)
+                    let py = base.loadUnaligned(fromByteOffset: 4, as: Float.self)
+                    let pz = base.loadUnaligned(fromByteOffset: 8, as: Float.self)
                     let ox = base.loadUnaligned(fromByteOffset: 12, as: Float.self)
                     let oy = base.loadUnaligned(fromByteOffset: 16, as: Float.self)
                     let oz = base.loadUnaligned(fromByteOffset: 20, as: Float.self)
                     let ow = base.loadUnaligned(fromByteOffset: 24, as: Float.self)
-                    onRenderPose(header.presentationTimeNs, (ox, oy, oz, ow))
+                    onRenderPose(header.presentationTimeNs, (px, py, pz), (ox, oy, oz, ow))
                 }
                 continue
             }

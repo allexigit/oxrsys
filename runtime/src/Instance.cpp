@@ -174,13 +174,17 @@ XrResult Instance::EnumerateViewConfigurationViews(XrSystemId systemId,
         return XR_ERROR_SIZE_INSUFFICIENT;
     }
 
+    uint32_t recommendedWidth = 0;
+    uint32_t recommendedHeight = 0;
+    RenderBaseEyeResolution(recommendedWidth, recommendedHeight);
+
     for (uint32_t i = 0; i < 2; i++)
     {
         views[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
         views[i].next = nullptr;
-        views[i].recommendedImageRectWidth = EyeWidth;
+        views[i].recommendedImageRectWidth = recommendedWidth;
         views[i].maxImageRectWidth = 4096;
-        views[i].recommendedImageRectHeight = EyeHeight;
+        views[i].recommendedImageRectHeight = recommendedHeight;
         views[i].maxImageRectHeight = 4096;
         views[i].recommendedSwapchainSampleCount = 1;
         views[i].maxSwapchainSampleCount = 1;

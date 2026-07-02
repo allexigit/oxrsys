@@ -252,13 +252,16 @@ QString ServerConfig::defaultText()
         "refresh_rate_hz = 72\n"
         "resolution_scale = 0.75\n"
         "dynamic_resolution_min_scale = 0.50\n"
+        "render_device = \"quest3\"\n"
         "keyframe_interval_sec = 2\n"
         "video_codec = \"h265\"\n"
         "encoder_preset = \"balanced\"\n"
+        "encoder_10bit = false\n"
         "transport = \"auto\"\n"
         "foveated_encoding_preset = \"off\"\n"
         "client_foveation_preset = \"auto\"\n"
         "client_upscaling = false\n"
+        "client_sharpening = 0.0\n"
         "client_reprojection = \"pose\"\n"
         "abr_mode = \"bitrate\"\n"
         "passthrough_enabled = false\n"
@@ -313,6 +316,12 @@ ServerConfig ServerConfig::parse(const QString& text)
         config.dynamicResolutionMinScale = dynamicResolutionMinScale;
     }
 
+    const QString renderDevice = stringValue("render_device", text);
+    if (renderDevice == "quest2" || renderDevice == "quest3" || renderDevice == "avp")
+    {
+        config.renderDevice = renderDevice;
+    }
+
     const int keyframeInterval = rawValue("keyframe_interval_sec", text).toInt(&ok);
     if (ok && keyframeInterval >= 1 && keyframeInterval <= 10)
     {
@@ -323,6 +332,12 @@ ServerConfig ServerConfig::parse(const QString& text)
     if (preset == "quality" || preset == "balanced" || preset == "speed")
     {
         config.encoderPreset = preset;
+    }
+
+    const bool encoder10Bit = boolValue("encoder_10bit", text, &ok);
+    if (ok)
+    {
+        config.encoder10Bit = encoder10Bit;
     }
 
     const QString videoCodec = stringValue("video_codec", text);
@@ -353,6 +368,12 @@ ServerConfig ServerConfig::parse(const QString& text)
     if (ok)
     {
         config.clientUpscaling = clientUpscaling;
+    }
+
+    const double clientSharpening = rawValue("client_sharpening", text).toDouble(&ok);
+    if (ok && clientSharpening >= 0.0 && clientSharpening <= 1.0)
+    {
+        config.clientSharpening = clientSharpening;
     }
 
     const QString clientReprojection = stringValue("client_reprojection", text);
@@ -447,13 +468,16 @@ QString ServerConfig::mergedInto(const QString& currentText) const
         {"refresh_rate_hz", QString::number(refreshRateHz)},
         {"resolution_scale", decimalString(resolutionScale)},
         {"dynamic_resolution_min_scale", decimalString(dynamicResolutionMinScale)},
+        {"render_device", QString("\"%1\"").arg(renderDevice)},
         {"keyframe_interval_sec", QString::number(keyframeIntervalSec)},
         {"video_codec", QString("\"%1\"").arg(videoCodec)},
         {"encoder_preset", QString("\"%1\"").arg(encoderPreset)},
+        {"encoder_10bit", boolString(encoder10Bit)},
         {"transport", QString("\"%1\"").arg(transport)},
         {"foveated_encoding_preset", QString("\"%1\"").arg(foveatedEncodingPreset)},
         {"client_foveation_preset", QString("\"%1\"").arg(clientFoveationPreset)},
         {"client_upscaling", boolString(clientUpscaling)},
+        {"client_sharpening", decimalString(clientSharpening)},
         {"client_reprojection", QString("\"%1\"").arg(clientReprojection)},
         {"abr_mode", QString("\"%1\"").arg(abrMode)},
         {"passthrough_enabled", boolString(passthroughEnabled)},

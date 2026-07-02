@@ -55,7 +55,8 @@ status `max_bitrate_mbps` follows the server config when the simulator connects.
 
 The Streaming tab also exposes the shared refresh-rate choices `60`, `72`, `80`, `90`, and `120`
 Hz, video codec choices `h265`, `h264`, and `auto`, encoder presets `speed`, `balanced`, and
-`quality`, and server-side foveated encoding presets `off`, `light`, `medium`, and `high`. It also
+`quality`, negotiated `encoder_10bit` HEVC Main10 streaming for capable H.265 clients, and
+server-side foveated encoding presets `off`, `light`, `medium`, and `high`. It also
 exposes `abr_mode` with `off`, `bitrate`, and `full`, `dynamic_resolution_min_scale`, passthrough
 enablement, occlusion mode, and the `[spatial]` feature toggles.
 The runtime stats view separates the global passthrough setting from headset support: `unsupported`

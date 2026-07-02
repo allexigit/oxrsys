@@ -100,7 +100,10 @@ private:
     QLabel* dynamicResolutionValueLabel_ = nullptr;
     QSlider* keyframeSlider_ = nullptr;
     QLabel* keyframeValueLabel_ = nullptr;
+    QSlider* sharpeningSlider_ = nullptr;
+    QLabel* sharpeningValueLabel_ = nullptr;
     QComboBox* refreshRateCombo_ = nullptr;
+    QComboBox* renderDeviceCombo_ = nullptr;
     QComboBox* encoderPresetCombo_ = nullptr;
     QComboBox* videoCodecCombo_ = nullptr;
     QComboBox* foveatedEncodingPresetCombo_ = nullptr;
@@ -110,6 +113,7 @@ private:
     QComboBox* occlusionModeCombo_ = nullptr;
     QComboBox* configTransportCombo_ = nullptr;
     QCheckBox* passthroughCheckBox_ = nullptr;
+    QCheckBox* encoder10BitCheckBox_ = nullptr;
     QCheckBox* spatialEnabledCheckBox_ = nullptr;
     QCheckBox* spatialAnchorsCheckBox_ = nullptr;
     QCheckBox* spatialSceneCheckBox_ = nullptr;

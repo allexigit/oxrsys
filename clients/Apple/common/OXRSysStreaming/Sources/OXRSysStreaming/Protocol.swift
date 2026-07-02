@@ -119,6 +119,7 @@ public struct ClientCapabilityFlags {
     public static let depthOcclusion: UInt32 = 0x00000080
     public static let spatialEntity: UInt32 = 0x00000100
     public static let sceneCapture: UInt32 = 0x00000200
+    public static let tenBitEncoding: UInt32 = 0x00000400
 }
 
 public enum FoveationPreset: UInt32, Sendable {
@@ -192,7 +193,7 @@ public struct ServerAnnounce: Sendable {
     public var foveationEdgeRatioX: Float = 1
     public var foveationEdgeRatioY: Float = 1
     public var spatialPort: UInt32 = UInt32(OXRProtocol.spatialPort)
-    public var reserved2: UInt32 = 0
+    public var clientSharpeningPercent: UInt32 = 0 // 0-100; headset contrast-adaptive sharpen strength
 
     public init() {}
 

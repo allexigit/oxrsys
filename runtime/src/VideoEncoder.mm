@@ -202,7 +202,7 @@ CMVideoCodecType VideoToolboxCodecType(oxr::protocol::VideoCodec codec)
     }
 }
 
-CFStringRef VideoToolboxProfileLevel(oxr::protocol::VideoCodec codec)
+CFStringRef VideoToolboxProfileLevel(oxr::protocol::VideoCodec codec, bool tenBit)
 {
     switch (codec)
     {
@@ -210,7 +210,7 @@ CFStringRef VideoToolboxProfileLevel(oxr::protocol::VideoCodec codec)
             return kVTProfileLevel_H264_Main_AutoLevel;
         case oxr::protocol::VideoCodec::H265:
         default:
-            return kVTProfileLevel_HEVC_Main_AutoLevel;
+            return tenBit ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel;
     }
 }
 
@@ -670,11 +670,40 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
     VTSessionSetProperty(compressionSession,
         kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
 
+    // Define one deterministic SDR color contract for every encoded stream. VideoToolbox embeds
+    // these values in H.264/H.265 metadata and uses the matching matrix for RGB-to-YCbCr conversion.
+    const OSStatus primariesStatus = VTSessionSetProperty(compressionSession,
+        kVTCompressionPropertyKey_ColorPrimaries,
+        kCVImageBufferColorPrimaries_ITU_R_709_2);
+    const OSStatus transferStatus = VTSessionSetProperty(compressionSession,
+        kVTCompressionPropertyKey_TransferFunction,
+        kCVImageBufferTransferFunction_ITU_R_709_2);
+    const OSStatus matrixStatus = VTSessionSetProperty(compressionSession,
+        kVTCompressionPropertyKey_YCbCrMatrix,
+        kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+    if (primariesStatus != noErr || transferStatus != noErr || matrixStatus != noErr)
+    {
+        spdlog::warn("VideoEncoder: failed to apply complete BT.709 color metadata (primaries={} transfer={} matrix={})",
+                     primariesStatus, transferStatus, matrixStatus);
+    }
+
     const ConfigValues config = Config::Get().GetValues();
     const std::string& preset = config.encoderPreset;
-    VTSessionSetProperty(compressionSession,
+    const OSStatus profileStatus = VTSessionSetProperty(compressionSession,
         kVTCompressionPropertyKey_ProfileLevel,
-        VideoToolboxProfileLevel(codec_));
+        VideoToolboxProfileLevel(codec_, tenBit_ && codec_ == oxr::protocol::VideoCodec::H265));
+    if (tenBit_ && codec_ == oxr::protocol::VideoCodec::H265)
+    {
+        if (profileStatus == noErr)
+        {
+            spdlog::info("VideoEncoder: Using HEVC Main10 (10-bit) profile");
+        }
+        else
+        {
+            spdlog::warn("VideoEncoder: HEVC Main10 profile unavailable ({}); falling back to encoder default",
+                         profileStatus);
+        }
+    }
     if (preset == "speed")
     {
         VTSessionSetProperty(compressionSession,

@@ -22,6 +22,11 @@ public final class VideoDecoder: @unchecked Sendable {
     private var sps: Data?
     private var pps: Data?
     private var paramSetsReady = false
+    private var prefer10Bit = false
+    // After a decode error, inter frames reference data we no longer have, so decoding them
+    // smears corruption forward. Drop VCL slices until a keyframe (IRAP/IDR) arrives while nudging
+    // the server for one — turning packet loss into a brief clean freeze instead of a green smear.
+    private var awaitingKeyframe = false
 
     private var sliceCount: Int = 0
     private var decodeErrorCount: Int = 0
@@ -34,6 +39,12 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     public init() {}
+
+    /// Requests a 10-bit VideoToolbox output surface for HEVC Main10 streams.
+    /// H.264 remains on the standard 8-bit output path.
+    public func setPrefer10Bit(_ value: Bool) {
+        locked { prefer10Bit = value }
+    }
 
     public func configure(callback: @escaping OnFrame) {
         locked { onFrame = callback }
@@ -109,7 +120,13 @@ public final class VideoDecoder: @unchecked Sendable {
                 tryCreateFormatDescription()
             }
         case 0...31:
-            decodeSlice(nal, codec: .h265, presentationTimeNs: presentationTimeNs)
+            // IRAP (16-23: BLA/IDR/CRA) are independently decodable random-access points.
+            let isIrap = nalType >= 16 && nalType <= 23
+            if shouldDropWhileRecovering(isKeyframe: isIrap) {
+                invokeDecodeErrorCallback() // keep nudging for a keyframe (cooldown rate-limits)
+            } else {
+                decodeSlice(nal, codec: .h265, presentationTimeNs: presentationTimeNs)
+            }
         default:
             break
         }
@@ -141,9 +158,28 @@ public final class VideoDecoder: @unchecked Sendable {
                 tryCreateFormatDescription()
             }
         case 1, 5:
-            decodeSlice(nal, codec: .h264, presentationTimeNs: presentationTimeNs)
+            // H.264 IDR (type 5) is the random-access keyframe; type 1 is a non-IDR (inter) slice.
+            if shouldDropWhileRecovering(isKeyframe: nalType == 5) {
+                invokeDecodeErrorCallback() // keep nudging for a keyframe (cooldown rate-limits)
+            } else {
+                decodeSlice(nal, codec: .h264, presentationTimeNs: presentationTimeNs)
+            }
         default:
             break
+        }
+    }
+
+    /// While recovering from a decode error, drop inter slices until a keyframe arrives. Clears the
+    /// recovering state on the keyframe so normal decoding resumes. Returns true if this slice
+    /// should be dropped.
+    private func shouldDropWhileRecovering(isKeyframe: Bool) -> Bool {
+        locked { () -> Bool in
+            guard awaitingKeyframe else { return false }
+            if isKeyframe {
+                awaitingKeyframe = false
+                return false
+            }
+            return true
         }
     }
 
@@ -166,9 +202,52 @@ public final class VideoDecoder: @unchecked Sendable {
         sps = nil
         pps = nil
         paramSetsReady = false
+        awaitingKeyframe = false
         sliceCount = 0
         decodeErrorCount = 0
         return oldSession
+    }
+
+    /// Creates a decompression session that outputs the given Metal-compatible pixel format.
+    /// Returns the session and the creation status so callers can fall back to another format.
+    private func makeDecompressionSession(
+        formatDescription fmt: CMFormatDescription,
+        pixelFormat: OSType
+    ) -> (VTDecompressionSession?, OSStatus) {
+        let decoderAttrs: [String: Any] = [
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat
+        ]
+
+        // Prefer the hardware decoder — always present on Apple silicon — so a real-time stream is
+        // never paced by a software decoder. `Enable` (not `Require`) still permits a fallback
+        // rather than failing session creation on a configuration that lacks one.
+        let decoderSpec: [String: Any] = [
+            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder as String: true
+        ]
+
+        var outputCallback = VTDecompressionOutputCallbackRecord(
+            decompressionOutputCallback: decompressionCallback,
+            decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
+        )
+
+        var newSession: VTDecompressionSession?
+        let status = VTDecompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            formatDescription: fmt,
+            decoderSpecification: decoderSpec as CFDictionary,
+            imageBufferAttributes: decoderAttrs as CFDictionary,
+            outputCallback: &outputCallback,
+            decompressionSessionOut: &newSession
+        )
+
+        // Low-latency decode: tell VideoToolbox latency matters more than throughput so it does not
+        // batch or hold frames. Never combine with MaximizePowerEfficiency (undefined behavior).
+        if status == noErr, let session = newSession {
+            VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        }
+        return (newSession, status)
     }
 
     private func tryCreateFormatDescription() {
@@ -243,28 +322,33 @@ public final class VideoDecoder: @unchecked Sendable {
             return
         }
 
-        let decoderAttrs: [String: Any] = [
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        ]
-
-        var outputCallback = VTDecompressionOutputCallbackRecord(
-            decompressionOutputCallback: decompressionCallback,
-            decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
-        )
+        // Prefer a 10-bit output surface for HEVC Main10, but fall back to 8-bit if the decoder
+        // refuses one — e.g. an 8-bit Main stream from a server with 10-bit disabled (the default).
+        // Without this fallback a rejected 10-bit request fails session creation outright → black
+        // screen. The renderer picks its color conversion from the buffer's actual format, so
+        // whichever surface we get displays correctly.
+        let want10Bit = locked { prefer10Bit && codec == .h265 }
+        let candidateFormats: [OSType] = want10Bit
+            ? [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+               kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
+            : [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
 
         var newSession: VTDecompressionSession?
-        let sessionStatus = VTDecompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            formatDescription: fmt,
-            decoderSpecification: nil,
-            imageBufferAttributes: decoderAttrs as CFDictionary,
-            outputCallback: &outputCallback,
-            decompressionSessionOut: &newSession
-        )
+        var chosenFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        var lastStatus: OSStatus = noErr
+        for pixelFormat in candidateFormats {
+            let (created, status) = makeDecompressionSession(formatDescription: fmt, pixelFormat: pixelFormat)
+            if let created {
+                newSession = created
+                chosenFormat = pixelFormat
+                break
+            }
+            lastStatus = status
+            print("[VideoDecoder/\(codec.logName)] Decompression session unavailable for pixel format '\(pixelFormat)' (\(status)); trying next")
+        }
 
-        guard sessionStatus == noErr, let newSession else {
-            print("[VideoDecoder/\(codec.logName)] Failed to create decompression session: \(sessionStatus)")
+        guard let newSession else {
+            print("[VideoDecoder/\(codec.logName)] Failed to create decompression session: \(lastStatus)")
             return
         }
 
@@ -282,7 +366,8 @@ public final class VideoDecoder: @unchecked Sendable {
         }
 
         let dim = CMVideoFormatDescriptionGetDimensions(fmt)
-        print("[VideoDecoder/\(codec.logName)] Decoder session created - \(dim.width)x\(dim.height)")
+        let bitLabel = chosenFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ? "10-bit" : "8-bit"
+        print("[VideoDecoder/\(codec.logName)] Decoder session created - \(dim.width)x\(dim.height) (\(bitLabel))")
     }
 
     private func decodeSlice(_ nalUnit: Data, codec: VideoCodec, presentationTimeNs: Int64) {
@@ -378,34 +463,44 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     private func splitNalUnits(_ data: Data) -> [Data] {
+        // Scan for Annex-B start codes directly over the frame's bytes instead of first copying the
+        // whole frame into a [UInt8] array. Each emitted NAL is copied out exactly once into an
+        // owned, 0-based Data — so callers can index nal[0] and param sets can be retained safely —
+        // which removes one full-frame heap copy and the per-byte bounds checking on the hot path.
+        let count = data.count
+        guard count > 0 else { return [] }
+
         var units = [Data]()
-        let bytes = [UInt8](data)
-        let count = bytes.count
-        var i = 0
-        var nalStart = -1
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var i = 0
+            var nalStart = -1
 
-        while i < count - 2 {
-            let isFourByte = (i < count - 3 && bytes[i] == 0 && bytes[i + 1] == 0 &&
-                              bytes[i + 2] == 0 && bytes[i + 3] == 1)
-            let isThreeByte = !isFourByte && (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1)
+            while i < count - 2 {
+                let isFourByte = (i < count - 3 && raw[i] == 0 && raw[i + 1] == 0 &&
+                                  raw[i + 2] == 0 && raw[i + 3] == 1)
+                let isThreeByte = !isFourByte && (raw[i] == 0 && raw[i + 1] == 0 && raw[i + 2] == 1)
 
-            if isThreeByte || isFourByte {
-                if nalStart >= 0 {
-                    units.append(Data(bytes[nalStart..<i]))
+                if isThreeByte || isFourByte {
+                    if nalStart >= 0 {
+                        units.append(Data(bytes: base + nalStart, count: i - nalStart))
+                    }
+                    let startCodeLen = isFourByte ? 4 : 3
+                    nalStart = i + startCodeLen
+                    i += startCodeLen
+                } else {
+                    i += 1
                 }
-                let startCodeLen = isFourByte ? 4 : 3
-                nalStart = i + startCodeLen
-                i += startCodeLen
-            } else {
-                i += 1
+            }
+
+            if nalStart >= 0 && nalStart < count {
+                units.append(Data(bytes: base + nalStart, count: count - nalStart))
             }
         }
 
-        if nalStart >= 0 && nalStart < count {
-            units.append(Data(bytes[nalStart..<count]))
-        }
-        if units.isEmpty && !data.isEmpty {
-            units.append(data)
+        // No start codes found → treat the whole buffer as a single NAL.
+        if units.isEmpty {
+            return [data]
         }
         return units
     }
@@ -419,7 +514,11 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     fileprivate func invokeDecodeErrorCallback() {
-        let callback = locked { onDecodeErrorCallback }
+        // Enter recovery: drop inter slices until a keyframe so corruption can't propagate.
+        let callback = locked { () -> (@Sendable () -> Void)? in
+            awaitingKeyframe = true
+            return onDecodeErrorCallback
+        }
         callback?()
     }
 

@@ -2,6 +2,7 @@
 
 #include "Session.h"
 #include "CompositionLayerAlpha.h"
+#include "Config.h"
 #include "Instance.h"
 #include "Runtime.h"
 #include "Swapchain.h"
@@ -934,10 +935,12 @@ void Session::StartStreamingIfNeeded()
     streamingServer_ = std::make_unique<StreamingServer>();
     streamingServer_->SetGraphicsContext(graphicsContext_);
 
-    // Use default resolution until first swapchain is created
-    // Will be updated when we know the actual render resolution
-    uint32_t width = 1512;
-    uint32_t height = 1680;
+    // Per-eye render resolution for the configured render_device — this must match the
+    // recommendedImageRect the app renders into (see RenderBaseEyeResolution), otherwise the
+    // encoder is sized off a stale default and the stream stays at that resolution.
+    uint32_t width = 0;
+    uint32_t height = 0;
+    RenderBaseEyeResolution(width, height);
     uint32_t refreshHz = 90;
 
     if (streamingServer_->Start(width, height, refreshHz))
