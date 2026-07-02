@@ -64,11 +64,13 @@ actor ImmersiveRenderer {
         var range: SIMD4<Float>
     }
 
-    /// Display-space post-processing parameters (sharpening). Layout matches Metal `PostFXParams`.
+    /// Post-processing parameters (sharpening). Layout matches Metal `PostFXParams`; the shader
+    /// derives the sharpening tap size from the video texture itself.
     struct PostFXParams {
-        var invResolution: SIMD2<Float> = .zero // 1 / per-eye output pixels
-        var sharpen: Float = 0                  // 0 = off
-        var pad: Float = 0
+        var sharpen: Float = 0 // 0 = off
+        var pad0: Float = 0
+        var pad1: Float = 0
+        var pad2: Float = 0
     }
 
     init(layerRenderer: LayerRenderer, appModel: AppModel, worldTracking: WorldTrackingProvider) {
@@ -249,12 +251,8 @@ actor ImmersiveRenderer {
                                  length: MemoryLayout<FoveationShaderParams>.stride,
                                  index: 2)
 
-        // Post-process (contrast-adaptive sharpening). invResolution is the per-eye output texel
-        // size so the shader can sample neighbours in display space; sharpen == 0 is a passthrough.
-        let invResolution = viewports.first.map {
-            SIMD2<Float>(1.0 / Float(max($0.width, 1)), 1.0 / Float(max($0.height, 1)))
-        } ?? SIMD2<Float>(0, 0)
-        var postfx = PostFXParams(invResolution: invResolution, sharpen: appModel.sharpenStrength())
+        // Post-process (contrast-adaptive sharpening); sharpen == 0 is a passthrough.
+        var postfx = PostFXParams(sharpen: appModel.sharpenStrength())
         encoder.setFragmentBytes(&postfx,
                                  length: MemoryLayout<PostFXParams>.stride,
                                  index: 3)

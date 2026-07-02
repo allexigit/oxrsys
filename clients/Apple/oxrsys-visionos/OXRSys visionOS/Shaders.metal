@@ -97,24 +97,21 @@ vertex StereoVertexOut stereoImmersiveVertex(uint vertexID [[vertex_id]],
     return out;
 }
 
-// Per-frame post-processing parameters (display-space sharpening).
+// Per-frame post-processing parameters (source-space luma sharpening).
 struct PostFXParams {
-    float2 invResolution; // 1 / per-eye output pixels (display-space texel size)
-    float sharpen;        // 0 = off; contrast-adaptive sharpen strength
-    float _pad;
+    float sharpen; // 0 = off; contrast-adaptive sharpen strength
+    float _pad0;
+    float _pad1;
+    float _pad2;
 };
 
-// Resolves one displayed eye-UV to linear RGB: rotational reprojection → foveation unwarp →
-// side-by-side stereo split → video-range BT.709 YCbCr→RGB. Factored out so the sharpening pass
-// can resample neighbours through the exact same mapping.
-static float3 sampleSceneRGB(float2 outCoord,
-                             float eyeIndex,
-                             ReprojData rd,
-                             constant FoveationParams &fov,
-                             constant VideoColorParams &colorParams,
-                             texture2d<float> lumaTexture,
-                             texture2d<float> chromaTexture,
-                             sampler s) {
+// Maps one displayed eye-UV to its side-by-side video UV: rotational reprojection → foveation
+// unwarp → stereo split. Computed once per fragment; the sharpening taps reuse the result and
+// step in video texels, so they never re-run this mapping.
+static float2 displayToStereoUV(float2 outCoord,
+                                float eyeIndex,
+                                ReprojData rd,
+                                constant FoveationParams &fov) {
     float left = rd.tangents.x;
     float right = rd.tangents.y;
     float up = rd.tangents.z;
@@ -150,19 +147,7 @@ static float3 sampleSceneRGB(float2 outCoord,
     }
 
     float eyeOffset = eyeIndex * 0.5;
-    float2 stereoUV = float2(sourceUV.x * 0.5 + eyeOffset, sourceUV.y);
-
-    float yLuma = lumaTexture.sample(s, stereoUV).r;
-    float2 cbcr = chromaTexture.sample(s, stereoUV).rg;
-
-    // The streaming contract is limited/video-range BT.709 SDR. Expand luma and chroma using
-    // bit-depth-specific normalized code values supplied by the renderer, then convert to RGB.
-    float luma = (yLuma - colorParams.range.x) * colorParams.range.y;
-    float cb = (cbcr.x - colorParams.range.z) * colorParams.range.w;
-    float cr = (cbcr.y - colorParams.range.z) * colorParams.range.w;
-    return float3(luma + 1.5748 * cr,
-                  luma - 0.1873 * cb - 0.4681 * cr,
-                  luma + 1.8556 * cb);
+    return float2(sourceUV.x * 0.5 + eyeOffset, sourceUV.y);
 }
 
 fragment float4 stereoImmersiveFragment(
@@ -183,24 +168,40 @@ fragment float4 stereoImmersiveFragment(
     }
 
     ReprojData rd = reproj[uint(in.eyeIndex)];
-    float3 color = sampleSceneRGB(in.texCoord, in.eyeIndex, rd, fov, colorParams,
-                                  lumaTexture, chromaTexture, textureSampler);
+    float2 stereoUV = displayToStereoUV(in.texCoord, in.eyeIndex, rd, fov);
+    float yLuma = lumaTexture.sample(textureSampler, stereoUV).r;
 
-    // Contrast-adaptive sharpening (FSR-RCAS-style): unsharp against the 4-neighbour average,
-    // clamped to the local min/max so detail crisps up without ringing/overshoot. A cheap
-    // perceived-sharpness win for the bilinearly-upscaled, bitrate-limited video. Off at 0.
+    // Contrast-adaptive sharpening on luma only, in source (video) space: the 4 neighbour taps
+    // step one video texel from the already-computed mapping instead of re-running the full
+    // reprojection/unwarp per tap, and luma carries virtually all perceived sharpness (chroma
+    // sharpening mostly adds ringing). Unsharp against the neighbour average, clamped to the
+    // local min/max so detail crisps up without overshoot. Raw code values are fine here: the
+    // later range expansion is affine, and this operation commutes with affine maps. Off at 0.
     if (postfx.sharpen > 0.0) {
-        float2 d = postfx.invResolution;
-        float3 l = sampleSceneRGB(in.texCoord + float2(-d.x, 0.0), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
-        float3 r = sampleSceneRGB(in.texCoord + float2( d.x, 0.0), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
-        float3 u = sampleSceneRGB(in.texCoord + float2(0.0, -d.y), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
-        float3 dn = sampleSceneRGB(in.texCoord + float2(0.0,  d.y), in.eyeIndex, rd, fov, colorParams, lumaTexture, chromaTexture, textureSampler);
-        float3 mn = min(color, min(min(l, r), min(u, dn)));
-        float3 mx = max(color, max(max(l, r), max(u, dn)));
-        float3 blurred = (l + r + u + dn) * 0.25;
-        float3 sharpened = color + (color - blurred) * postfx.sharpen;
-        color = clamp(sharpened, mn, mx);
+        float2 d = 1.0 / float2(lumaTexture.get_width(), lumaTexture.get_height());
+        // Keep horizontal taps inside this eye's half of the side-by-side frame so sharpening
+        // never bleeds across the stereo seam.
+        float xMin = in.eyeIndex * 0.5 + 0.5 * d.x;
+        float xMax = in.eyeIndex * 0.5 + 0.5 - 0.5 * d.x;
+        float l = lumaTexture.sample(textureSampler, float2(clamp(stereoUV.x - d.x, xMin, xMax), stereoUV.y)).r;
+        float r = lumaTexture.sample(textureSampler, float2(clamp(stereoUV.x + d.x, xMin, xMax), stereoUV.y)).r;
+        float u = lumaTexture.sample(textureSampler, float2(stereoUV.x, stereoUV.y - d.y)).r;
+        float dn = lumaTexture.sample(textureSampler, float2(stereoUV.x, stereoUV.y + d.y)).r;
+        float mn = min(yLuma, min(min(l, r), min(u, dn)));
+        float mx = max(yLuma, max(max(l, r), max(u, dn)));
+        float blurred = (l + r + u + dn) * 0.25;
+        yLuma = clamp(yLuma + (yLuma - blurred) * postfx.sharpen, mn, mx);
     }
 
-    return float4(clamp(color, 0.0, 1.0), 1.0);
+    float2 cbcr = chromaTexture.sample(textureSampler, stereoUV).rg;
+
+    // The streaming contract is limited/video-range BT.709 SDR. Expand luma and chroma using
+    // bit-depth-specific normalized code values supplied by the renderer, then convert to RGB.
+    float luma = (yLuma - colorParams.range.x) * colorParams.range.y;
+    float cb = (cbcr.x - colorParams.range.z) * colorParams.range.w;
+    float cr = (cbcr.y - colorParams.range.z) * colorParams.range.w;
+    float3 rgb = float3(luma + 1.5748 * cr,
+                        luma - 0.1873 * cb - 0.4681 * cr,
+                        luma + 1.8556 * cb);
+    return float4(clamp(rgb, 0.0, 1.0), 1.0);
 }
