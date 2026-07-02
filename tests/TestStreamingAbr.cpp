@@ -119,7 +119,7 @@ TEST_CASE("Streaming ABR scales reprojection thresholds by refresh rate", "[stre
     // would rightly flag 72Hz as constrained should not flag 90Hz as
     // constrained, since 90/72 = 1.25x more frames render in the same window.
     Controller controller72;
-    controller72.Reset(Mode::Bitrate, 80, 100, 72);
+    controller72.Reset(Mode::Bitrate, 80, 100, 1.0f, 0.5f, 72);
 
     Sample sample72 = {};
     sample72.totalClientLatencyMs = 20.0f;
@@ -130,7 +130,7 @@ TEST_CASE("Streaming ABR scales reprojection thresholds by refresh rate", "[stre
     CHECK(decision72.state == State::Constrained);
 
     Controller controller90;
-    controller90.Reset(Mode::Bitrate, 80, 100, 90);
+    controller90.Reset(Mode::Bitrate, 80, 100, 1.0f, 0.5f, 90);
 
     Sample sample90 = {};
     sample90.totalClientLatencyMs = 20.0f;
