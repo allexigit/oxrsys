@@ -262,6 +262,21 @@ actor ImmersiveRenderer {
         drawable.encodePresent(commandBuffer: commandBuffer)
     }
 
+    /// Frustum tangents (left, right, up, down; positive magnitudes — the same order the
+    /// deprecated `view.tangents` used) derived from the drawable's projection matrix.
+    /// The matrix maps view space looking down -Z with w_clip = -z (the depth-clear code
+    /// already depends on this convention working on device), so the NDC edge conditions
+    /// A·tR - C = 1, A·tL + C = 1, B·tU - D = 1, B·tD + D = 1 invert to the forms below,
+    /// with A = P00, B = P11, C = P20, D = P21.
+    private func frustumTangents(drawable: LayerRenderer.Drawable, viewIndex: Int) -> SIMD4<Float> {
+        let p = drawable.computeProjection(viewIndex: viewIndex)
+        let left = (1 - p.columns.2.x) / p.columns.0.x
+        let right = (1 + p.columns.2.x) / p.columns.0.x
+        let up = (1 + p.columns.2.y) / p.columns.1.y
+        let down = (1 - p.columns.2.y) / p.columns.1.y
+        return SIMD4<Float>(left, right, up, down)
+    }
+
     /// Builds per-eye reprojection data: the rotation mapping a current-eye ray into the render
     /// pose's eye frame, plus that eye's frustum tangents. Identity rotation (no render pose yet,
     /// or no head motion since the frame was rendered) is an exact passthrough.
@@ -271,7 +286,7 @@ actor ImmersiveRenderer {
         let viewCount = max(drawable.views.count, 1)
         var data: [ReprojData] = (0..<viewCount).map { index in
             let tangents = index < drawable.views.count
-                ? drawable.views[index].tangents
+                ? frustumTangents(drawable: drawable, viewIndex: index)
                 : SIMD4<Float>(1, 1, 1, 1)
             return ReprojData(rot: matrix_identity_float3x3, tangents: tangents)
         }
@@ -300,12 +315,12 @@ actor ImmersiveRenderer {
     }
 
     /// Sends the device's real per-eye FOV (radians, OpenXR signed angles) and IPD so the
-    /// runtime renders the matching frustum instead of its symmetric fallback FOV. visionOS
-    /// view tangents are positive magnitudes in (left, right, up, down) order, so negate the
-    /// left and down components to produce OpenXR's signed XrFovf angles.
+    /// runtime renders the matching frustum instead of its symmetric fallback FOV. The
+    /// projection-derived tangents are positive magnitudes in (left, right, up, down) order,
+    /// so negate the left and down components to produce OpenXR's signed XrFovf angles.
     private func publishEyeProjection(_ drawable: LayerRenderer.Drawable) {
         guard let leftView = drawable.views.first else { return }
-        let t = leftView.tangents
+        let t = frustumTangents(drawable: drawable, viewIndex: 0)
         let fovAngles = SIMD4<Float>(-atan(t.x), atan(t.y), atan(t.z), -atan(t.w))
 
         let leftEye = leftView.transform.columns.3
@@ -317,7 +332,7 @@ actor ImmersiveRenderer {
             didLogProjection = true
             print("[ProjDiag] L.tangents=(\(t.x), \(t.y), \(t.z), \(t.w))")
             if drawable.views.count > 1 {
-                let rt = drawable.views[1].tangents
+                let rt = frustumTangents(drawable: drawable, viewIndex: 1)
                 print("[ProjDiag] R.tangents=(\(rt.x), \(rt.y), \(rt.z), \(rt.w))")
             }
             print("[ProjDiag] fovAngles(rad)=(\(fovAngles.x), \(fovAngles.y), \(fovAngles.z), \(fovAngles.w)) ipd=\(ipd)")
