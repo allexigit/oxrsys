@@ -12,6 +12,9 @@ nonisolated private enum ImmersiveRendererConstants {
     // only lets the CPU drift an extra frame ahead — pure added latency (~1 frame, ~11 ms @ 90 Hz)
     // with no throughput gain for a video blit. Drop to 2 to shave that frame.
     static let maxBuffersInFlight = 2
+    // The assumed scene depth for reprojection, shared by the depth-buffer clear (compositor
+    // positional warp) and the shader's planar translation warp so the two can never disagree.
+    static let reprojectionPlaneDistance: Float = 2.0
 }
 
 extension LayerRenderer.Clock.Instant {
@@ -54,8 +57,9 @@ actor ImmersiveRenderer {
     /// Per-eye reprojection data for the fragment shader: the rotation from the current-eye frame
     /// into the render-eye frame, plus that eye's frustum tangents.
     struct ReprojData {
-        var rot: simd_float3x3       // current-eye → render-eye rotation (R_render⁻¹ · R_current)
-        var tangents: SIMD4<Float>   // (left, right, up, down) positive tangent magnitudes
+        var rot: simd_float3x3        // current-eye → render-eye rotation (R_render⁻¹ · R_current)
+        var tangents: SIMD4<Float>    // (left, right, up, down) positive tangent magnitudes
+        var translation: SIMD3<Float> // (current − render) eye position in the render-eye frame, ÷ plane distance
     }
 
     /// Normalized video-range conversion constants consumed by the Metal shader:
@@ -168,14 +172,17 @@ actor ImmersiveRenderer {
         publishEyeProjection(drawable)
 
         // Pair the displayed frame with the render pose it was drawn for, and reproject it into
-        // the live head pose. The compositor still does its small predicted→actual pass via
-        // deviceAnchor; this handles the larger render-pose→now rotation.
+        // the live head pose — rotation exactly, translation against the shared depth plane. The
+        // compositor still does its small predicted→actual pass via deviceAnchor; this handles
+        // the larger render-pose→now delta (the full pipeline latency).
         let frame = appModel.currentFrame()
-        let currentOrientation = currentAnchor.map { headOrientation(from: $0) }
-        let renderOrientation = appModel.renderOrientation(forPresentationTimeNs: frame.presentationTimeNs)
+        let currentPose = currentAnchor.map {
+            (position: headPosition(from: $0), orientation: headOrientation(from: $0))
+        }
+        let renderPose = appModel.renderPose(forPresentationTimeNs: frame.presentationTimeNs)
         var reprojData = reprojectionData(drawable: drawable,
-                                          currentOrientation: currentOrientation,
-                                          renderOrientation: renderOrientation)
+                                          currentPose: currentPose,
+                                          renderPose: renderPose)
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = drawable.colorTextures[0]
@@ -187,7 +194,8 @@ actor ImmersiveRenderer {
         // depth to a ~2 m head-locked plane so the compositor applies that parallax and translation
         // feels responsive rather than lagging the full round-trip. The tradeoff is some "swim" on
         // content far from 2 m; the real fix is streaming a real depth buffer (6DOF timewarp).
-        let clip = drawable.computeProjection(viewIndex: 0) * SIMD4<Float>(0, 0, -2.0, 1)
+        let clip = drawable.computeProjection(viewIndex: 0)
+            * SIMD4<Float>(0, 0, -ImmersiveRendererConstants.reprojectionPlaneDistance, 1)
         renderPassDescriptor.depthAttachment.texture = drawable.depthTextures[0]
         renderPassDescriptor.depthAttachment.loadAction = .clear
         renderPassDescriptor.depthAttachment.storeAction = .store
@@ -278,30 +286,59 @@ actor ImmersiveRenderer {
     }
 
     /// Builds per-eye reprojection data: the rotation mapping a current-eye ray into the render
-    /// pose's eye frame, plus that eye's frustum tangents. Identity rotation (no render pose yet,
-    /// or no head motion since the frame was rendered) is an exact passthrough.
+    /// pose's eye frame, that eye's frustum tangents, and the eye-position delta for the planar
+    /// translation warp. Identity rotation + zero translation (no render pose yet, or no head
+    /// motion since the frame was rendered) is an exact passthrough.
     private func reprojectionData(drawable: LayerRenderer.Drawable,
-                                  currentOrientation: simd_quatf?,
-                                  renderOrientation: simd_quatf?) -> [ReprojData] {
+                                  currentPose: (position: SIMD3<Float>, orientation: simd_quatf)?,
+                                  renderPose: RenderPose?) -> [ReprojData] {
         let viewCount = max(drawable.views.count, 1)
         var data: [ReprojData] = (0..<viewCount).map { index in
             let tangents = index < drawable.views.count
                 ? frustumTangents(drawable: drawable, viewIndex: index)
                 : SIMD4<Float>(1, 1, 1, 1)
-            return ReprojData(rot: matrix_identity_float3x3, tangents: tangents)
+            return ReprojData(rot: matrix_identity_float3x3, tangents: tangents, translation: .zero)
         }
 
-        guard let currentOrientation, let renderOrientation else {
+        guard let currentPose, let renderPose else {
             return data
         }
 
         // dir_render = (R_render⁻¹ · R_current) · dir_current, so the shader finds which texel of
         // the server-rendered frame each live output ray maps to.
-        let rot = simd_float3x3(simd_normalize(renderOrientation.inverse * currentOrientation))
+        let rotQuat = simd_normalize(renderPose.orientation.inverse * currentPose.orientation)
+        let rot = simd_float3x3(rotQuat)
+
+        // Head translation since the frame was rendered, expressed in the render-eye frame. For a
+        // point assumed at the reprojection plane distance d along the current ray, the render-eye
+        // position is rot·dir·d + Δ, so the shader adds Δ/d to the rotated ray. Clamped so a bad
+        // pose match can never explode the warp; zero delta stays an exact passthrough.
+        var headDelta = currentPose.position - renderPose.position
+        let deltaLength = simd_length(headDelta)
+        let maxDelta: Float = 0.5
+        if deltaLength > maxDelta {
+            headDelta *= maxDelta / deltaLength
+        }
+        let baseDelta = renderPose.orientation.inverse.act(headDelta)
+
         for index in data.indices {
+            var eyeDelta = baseDelta
+            if index < drawable.views.count {
+                // Rotation-induced eye translation (the eye orbits the head by its IPD lever arm).
+                let c = drawable.views[index].transform.columns.3
+                let eyeOffset = SIMD3<Float>(c.x, c.y, c.z)
+                eyeDelta += rot * eyeOffset - eyeOffset
+            }
             data[index].rot = rot
+            data[index].translation = eyeDelta / ImmersiveRendererConstants.reprojectionPlaneDistance
         }
         return data
+    }
+
+    /// Head position (world) from a device anchor's transform.
+    private func headPosition(from anchor: DeviceAnchor) -> SIMD3<Float> {
+        let t = anchor.originFromAnchorTransform.columns.3
+        return SIMD3<Float>(t.x, t.y, t.z)
     }
 
     /// Head orientation (world-from-head) from a device anchor's transform.

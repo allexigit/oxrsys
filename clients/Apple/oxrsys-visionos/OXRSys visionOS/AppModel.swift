@@ -95,35 +95,42 @@ private nonisolated final class EyeProjectionState: @unchecked Sendable {
     }
 }
 
-/// Stores the head orientation the server rendered each frame for, keyed by the frame's
-/// presentation timestamp, so the renderer can reproject the displayed frame to the live pose.
+/// The full head pose (position + orientation) the server rendered a frame for.
+nonisolated struct RenderPose: Sendable {
+    var position: SIMD3<Float>
+    var orientation: simd_quatf
+}
+
+/// Stores the head pose the server rendered each frame for, keyed by the frame's presentation
+/// timestamp, so the renderer can reproject the displayed frame to the live pose — rotation
+/// exactly, and translation against the reprojection depth plane.
 private nonisolated final class RenderPoseReprojector: @unchecked Sendable {
     private let lock = NSLock()
-    private var orientationByPresentationNs: [Int64: simd_quatf] = [:]
+    private var poseByPresentationNs: [Int64: RenderPose] = [:]
     private let capacity = 240   // ring-buffer cap (~a few seconds of frames); bounds memory only
     private var latestKey: Int64 = 0
-    private var latestOrientation: simd_quatf?
+    private var latestPose: RenderPose?
 
-    func note(presentationTimeNs: Int64, orientation: simd_quatf) {
+    func note(presentationTimeNs: Int64, pose: RenderPose) {
         lock.lock()
-        orientationByPresentationNs[presentationTimeNs] = orientation
+        poseByPresentationNs[presentationTimeNs] = pose
         if presentationTimeNs >= latestKey {
             latestKey = presentationTimeNs
-            latestOrientation = orientation
+            latestPose = pose
         }
-        if orientationByPresentationNs.count > capacity,
-           let oldest = orientationByPresentationNs.keys.min() {
-            orientationByPresentationNs.removeValue(forKey: oldest)
+        if poseByPresentationNs.count > capacity,
+           let oldest = poseByPresentationNs.keys.min() {
+            poseByPresentationNs.removeValue(forKey: oldest)
         }
         lock.unlock()
     }
 
     /// Exact render pose for this frame, falling back to the most recent one if this frame's pose
     /// packet was lost (it's a single un-FEC'd UDP packet) — exact match first, recent pose second.
-    func orientation(forPresentationTimeNs presentationTimeNs: Int64) -> simd_quatf? {
+    func pose(forPresentationTimeNs presentationTimeNs: Int64) -> RenderPose? {
         lock.lock()
         defer { lock.unlock() }
-        return orientationByPresentationNs[presentationTimeNs] ?? latestOrientation
+        return poseByPresentationNs[presentationTimeNs] ?? latestPose
     }
 }
 
@@ -470,9 +477,12 @@ final class AppModel {
                 codec: frame.codec,
                 presentationTimeNs: frame.presentationTimeNs
             )
-        }, onRenderPose: { [weak self] presentationTimeNs, orientation in
-            let quat = simd_quatf(ix: orientation.0, iy: orientation.1, iz: orientation.2, r: orientation.3)
-            self?.renderPoseReprojector.note(presentationTimeNs: presentationTimeNs, orientation: quat)
+        }, onRenderPose: { [weak self] presentationTimeNs, position, orientation in
+            let pose = RenderPose(
+                position: SIMD3<Float>(position.0, position.1, position.2),
+                orientation: simd_quatf(ix: orientation.0, iy: orientation.1, iz: orientation.2, r: orientation.3)
+            )
+            self?.renderPoseReprojector.note(presentationTimeNs: presentationTimeNs, pose: pose)
         })
 
         Thread.sleep(forTimeInterval: 0.05)
@@ -659,10 +669,10 @@ final class AppModel {
         pixelBufferState.getWithTimestamp()
     }
 
-    /// The head orientation the frame with this presentation timestamp was rendered for, used by
-    /// the renderer to reproject it to the live head pose.
-    nonisolated func renderOrientation(forPresentationTimeNs presentationTimeNs: Int64) -> simd_quatf? {
-        renderPoseReprojector.orientation(forPresentationTimeNs: presentationTimeNs)
+    /// The head pose the frame with this presentation timestamp was rendered for, used by the
+    /// renderer to reproject it to the live head pose.
+    nonisolated func renderPose(forPresentationTimeNs presentationTimeNs: Int64) -> RenderPose? {
+        renderPoseReprojector.pose(forPresentationTimeNs: presentationTimeNs)
     }
 
     /// Called from the render loop with the device's real per-eye FOV (radians, OpenXR

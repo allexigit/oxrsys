@@ -17,8 +17,9 @@ using namespace metal;
 // rotates (the same idea Quest Link / Virtual Desktop / ALVR use), with no tuning constants —
 // only the eye's real FOV tangents and the rotation between the two head poses.
 struct ReprojData {
-    float3x3 rot;     // maps a current-eye ray direction into render-eye space (R_render^-1 * R_current)
-    float4 tangents;  // (left, right, up, down) positive tangent magnitudes for this eye
+    float3x3 rot;       // maps a current-eye ray direction into render-eye space (R_render^-1 * R_current)
+    float4 tangents;    // (left, right, up, down) positive tangent magnitudes for this eye
+    float3 translation; // (current - render) eye position in render-eye space, divided by the plane distance
 };
 
 struct VideoColorParams {
@@ -123,9 +124,11 @@ static float2 displayToStereoUV(float2 outCoord,
     float y = mix(up, -down, outCoord.y);
     float3 dirCurrent = float3(x, y, -1.0);
 
-    // Rotate into the pose the server rendered this frame for, then reproject through the same
-    // per-eye frustum to find the source texel (identity rot → eyeUV == outCoord).
-    float3 dirRender = rd.rot * dirCurrent;
+    // Map into the pose the server rendered this frame for — rotation exactly, translation as
+    // planar parallax: a point assumed at plane distance d along the current ray sits at
+    // rot·dir·d + Δ in the render eye, so adding Δ/d to the rotated ray reprojects both the
+    // render→now rotation AND translation (identity rot + zero Δ → eyeUV == outCoord).
+    float3 dirRender = rd.rot * dirCurrent + rd.translation;
     float2 eyeUV = outCoord;
     if (dirRender.z < 0.0) {
         float zf = -dirRender.z;
