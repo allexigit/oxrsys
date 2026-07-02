@@ -275,6 +275,18 @@ final class AppModel {
                 snapshot.orientation.imag.z,
                 snapshot.orientation.real
             )
+            // Measured head velocities: the runtime prefers these for its bounded pose
+            // prediction over finite-differencing the received poses.
+            packet.headLinearVelocity = (
+                snapshot.linearVelocity.x,
+                snapshot.linearVelocity.y,
+                snapshot.linearVelocity.z
+            )
+            packet.headAngularVelocity = (
+                snapshot.angularVelocity.x,
+                snapshot.angularVelocity.y,
+                snapshot.angularVelocity.z
+            )
             let eyeProjection = self.eyeProjectionState.get()
             packet.ipd = eyeProjection.ipd > 0 ? eyeProjection.ipd : 0.064
             if eyeProjection.fovAngles != SIMD4<Float>(repeating: 0) {

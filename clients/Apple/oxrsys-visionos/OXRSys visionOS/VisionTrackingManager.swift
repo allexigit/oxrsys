@@ -42,6 +42,11 @@ struct VisionControllerState: Sendable {
 struct VisionTrackingSnapshot: Sendable {
     var position: SIMD3<Float> = .zero
     var orientation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    /// Measured head velocities (world frame, m/s and rad/s) from consecutive ARKit samples.
+    /// The runtime prefers these over its own finite differencing of received UDP poses for
+    /// bounded pose prediction; angular velocity uses the pre-multiply convention it applies.
+    var linearVelocity: SIMD3<Float> = .zero
+    var angularVelocity: SIMD3<Float> = .zero
     var timestampNs: Int64 = 0
     var isTracking = false
     var leftHand: VisionHandState?
@@ -65,6 +70,14 @@ final class VisionTrackingManager: @unchecked Sendable {
     private var running = false
     private var accessoryTrackingProvider: Any?
     private var lastHeadOrientation: simd_quatf?
+
+    // Previous sample for head-velocity measurement (all access on `queue`), plus a light EMA so
+    // the reported velocities don't carry per-sample tracking noise into the server's prediction.
+    private var lastSamplePosition: SIMD3<Float>?
+    private var lastSampleOrientation: simd_quatf?
+    private var lastSampleTime: Double = 0
+    private var smoothedLinearVelocity: SIMD3<Float> = .zero
+    private var smoothedAngularVelocity: SIMD3<Float> = .zero
 
     // Controller emulation from hands / gamepad. All access is on `queue` (with sampleTracking).
     private var gestureEmulator = HandGestureEmulator()
@@ -141,6 +154,11 @@ final class VisionTrackingManager: @unchecked Sendable {
         session.stop()
         accessoryTrackingProvider = nil
         lastHeadOrientation = nil
+        lastSamplePosition = nil
+        lastSampleOrientation = nil
+        lastSampleTime = 0
+        smoothedLinearVelocity = .zero
+        smoothedAngularVelocity = .zero
         gestureEmulator.reset()
     }
 
@@ -238,9 +256,50 @@ final class VisionTrackingManager: @unchecked Sendable {
         )
         lastHeadOrientation = orientation
 
+        // Measure head velocity from consecutive ARKit samples on this steady timer — a far
+        // cleaner signal than the server finite-differencing poses off jittery UDP arrival.
+        var linearVelocity = SIMD3<Float>.zero
+        var angularVelocity = SIMD3<Float>.zero
+        if deviceAnchor.isTracked {
+            if let prevPosition = lastSamplePosition,
+               let prevOrientation = lastSampleOrientation {
+                let dt = Float(timestamp - lastSampleTime)
+                if dt > 0.001, dt < 0.1 {
+                    let rawLinear = (position - prevPosition) / dt
+                    // World-frame angular velocity from the pre-multiply delta (q_now = Δq·q_prev),
+                    // the convention the runtime's PredictOrientationFromVelocity applies.
+                    var delta = simd_normalize(orientation * prevOrientation.inverse)
+                    if delta.real < 0 { delta = simd_quatf(vector: -delta.vector) } // shortest arc
+                    var rawAngular = SIMD3<Float>.zero
+                    let imagLength = simd_length(delta.imag)
+                    if imagLength > 1e-6 {
+                        let angle = 2 * atan2(imagLength, delta.real)
+                        rawAngular = (delta.imag / imagLength) * (angle / dt)
+                    }
+                    // Light EMA (~2 samples): strips per-sample noise without adding real lag.
+                    let alpha: Float = 0.5
+                    smoothedLinearVelocity = smoothedLinearVelocity * (1 - alpha) + rawLinear * alpha
+                    smoothedAngularVelocity = smoothedAngularVelocity * (1 - alpha) + rawAngular * alpha
+                }
+            }
+            lastSamplePosition = position
+            lastSampleOrientation = orientation
+            lastSampleTime = timestamp
+            linearVelocity = smoothedLinearVelocity
+            angularVelocity = smoothedAngularVelocity
+        } else {
+            // Tracking lost: report zero and restart the measurement on reacquisition.
+            lastSamplePosition = nil
+            lastSampleOrientation = nil
+            smoothedLinearVelocity = .zero
+            smoothedAngularVelocity = .zero
+        }
+
         var snapshot = VisionTrackingSnapshot(
             position: position,
             orientation: orientation,
+            linearVelocity: linearVelocity,
+            angularVelocity: angularVelocity,
             timestampNs: Int64(timestamp * 1_000_000_000),
             isTracking: deviceAnchor.isTracked
         )
