@@ -52,6 +52,7 @@ actor ImmersiveRenderer {
     private let endFrameEvent: MTLSharedEvent
 
     private var committedFrameIndex: UInt64 = UInt64(ImmersiveRendererConstants.maxBuffersInFlight)
+    private var lastMeasuredPresentationNs: Int64 = 0
     private var didLogProjection = false
 
     /// Per-eye reprojection data for the fragment shader: the rotation from the current-eye frame
@@ -176,6 +177,19 @@ actor ImmersiveRenderer {
         // compositor still does its small predicted→actual pass via deviceAnchor; this handles
         // the larger render-pose→now delta (the full pipeline latency).
         let frame = appModel.currentFrame()
+
+        // Measure real decode-to-photon once per video frame (the first drawable that shows it)
+        // and report it, so the server's prediction horizon covers the actual client display
+        // path — pickup wait, in-flight queue, and compositor present — not a one-refresh guess.
+        // Both timestamps are in the mach/CACurrentMediaTime domain.
+        if frame.presentationTimeNs != 0, frame.decodeTimeNs != 0,
+           frame.presentationTimeNs != lastMeasuredPresentationNs {
+            lastMeasuredPresentationNs = frame.presentationTimeNs
+            let photonNs = Int64(presentationTime * 1_000_000_000)
+            let displayLatencyMs = Double(photonNs - frame.decodeTimeNs) / 1_000_000.0
+            appModel.noteFrameDisplayed(displayLatencyMs: displayLatencyMs)
+        }
+
         let currentPose = currentAnchor.map {
             (position: headPosition(from: $0), orientation: headOrientation(from: $0))
         }

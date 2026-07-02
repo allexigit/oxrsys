@@ -26,6 +26,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Changed
 
+- The visionOS client now measures real decode-to-photon latency (renderer pickup wait + in-flight queue + compositor present) per displayed frame and reports it in place of the previous one-refresh compositor guess, so the runtime's pose-prediction horizon covers the actual client display path; the displayed-frame-age field is now populated too.
 - The visionOS client now reports measured head linear/angular velocity (differenced from consecutive ARKit samples with light smoothing) in the tracking packet, activating the runtime's preferred client-velocity path for bounded pose prediction instead of its noisier finite differencing of received UDP poses — frames arrive rendered closer to the actual head position.
 - Extended visionOS reprojection from rotation-only to a full 6-DOF planar timewarp: the echoed render-pose position (previously discarded) is now kept, and the fragment shader compensates head translation against the shared 2 m reprojection plane for the entire render-to-display latency — up/down/sway no longer lags the full round-trip. Includes the per-eye rotation-induced offset (IPD lever arm) and a clamped delta so a bad pose match cannot distort the warp.
 - Replaced the deprecated `LayerRenderer.Drawable.View.tangents` API (visionOS 2.0) with frustum tangents derived from `computeProjection`, keeping the exact (left, right, up, down) magnitudes used by the reprojection shader and the FOV sent to the runtime.

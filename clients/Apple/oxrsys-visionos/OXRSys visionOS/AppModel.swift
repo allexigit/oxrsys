@@ -15,11 +15,13 @@ private nonisolated final class PixelBufferState: @unchecked Sendable {
     private let lock = NSLock()
     private var pixelBuffer: CVPixelBuffer?
     private var presentationTimeNs: Int64 = 0
+    private var decodeTimeNs: Int64 = 0
 
-    func set(_ newValue: CVPixelBuffer?, presentationTimeNs: Int64) {
+    func set(_ newValue: CVPixelBuffer?, presentationTimeNs: Int64, decodeTimeNs: Int64) {
         lock.lock()
         pixelBuffer = newValue
         self.presentationTimeNs = presentationTimeNs
+        self.decodeTimeNs = decodeTimeNs
         lock.unlock()
     }
 
@@ -30,12 +32,13 @@ private nonisolated final class PixelBufferState: @unchecked Sendable {
         return value
     }
 
-    /// The displayed frame and the presentation timestamp it was tagged with, read together so
-    /// the renderer reprojects that exact frame with the render pose that belongs to it.
-    func getWithTimestamp() -> (pixelBuffer: CVPixelBuffer?, presentationTimeNs: Int64) {
+    /// The displayed frame, the presentation timestamp it was tagged with, and the wall time it
+    /// finished decoding — read together so the renderer reprojects that exact frame with the
+    /// render pose that belongs to it and can measure real decode-to-photon latency.
+    func getWithTimestamp() -> (pixelBuffer: CVPixelBuffer?, presentationTimeNs: Int64, decodeTimeNs: Int64) {
         lock.lock()
         defer { lock.unlock() }
-        return (pixelBuffer, presentationTimeNs)
+        return (pixelBuffer, presentationTimeNs, decodeTimeNs)
     }
 }
 
@@ -451,11 +454,14 @@ final class AppModel {
         decoder.configure { [weak self] pixelBuffer, presentationTime in
             guard let self else { return }
             self.keyframeRecoveryState.noteDecodedFrame()
-            self.pixelBufferState.set(pixelBuffer, presentationTimeNs: Self.nanoseconds(from: presentationTime))
+            let decodeTimeNs = VideoReceiver.monotonicNs()
+            self.pixelBufferState.set(pixelBuffer,
+                                      presentationTimeNs: Self.nanoseconds(from: presentationTime),
+                                      decodeTimeNs: decodeTimeNs)
 
             self.latencyReporter.noteFrameDecoded(
                 presentationTimeNs: Self.nanoseconds(from: presentationTime),
-                decodeTimeNs: VideoReceiver.monotonicNs(),
+                decodeTimeNs: decodeTimeNs,
                 refreshRateHz: refreshRateHz,
                 controlChannel: self.controlChannel
             )
@@ -548,7 +554,7 @@ final class AppModel {
         isTrackingActive = false
         stats = StreamStats()
         statusText = "Tap Search to find the runtime"
-        pixelBufferState.set(nil, presentationTimeNs: 0)
+        pixelBufferState.set(nil, presentationTimeNs: 0, decodeTimeNs: 0)
         keyframeRecoveryState.reset()
         foveationState.set(FoveationShaderParams())
         postFXState.setSharpen(0)
@@ -677,8 +683,15 @@ final class AppModel {
 
     /// The displayed frame and its presentation timestamp, snapshotted together so the renderer
     /// reprojects that exact frame with the render pose that belongs to it.
-    nonisolated func currentFrame() -> (pixelBuffer: CVPixelBuffer?, presentationTimeNs: Int64) {
+    nonisolated func currentFrame() -> (pixelBuffer: CVPixelBuffer?, presentationTimeNs: Int64, decodeTimeNs: Int64) {
         pixelBufferState.getWithTimestamp()
+    }
+
+    /// Called by the renderer the first time a decoded frame is drawn, with the measured
+    /// decode-to-photon time. Replaces the guessed one-frame compositor budget in the latency
+    /// report, so the server's prediction horizon reflects the true client display path.
+    nonisolated func noteFrameDisplayed(displayLatencyMs: Double) {
+        latencyReporter.noteFrameDisplayed(displayLatencyMs: displayLatencyMs)
     }
 
     /// The head pose the frame with this presentation timestamp was rendered for, used by the
